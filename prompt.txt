@@ -1,0 +1,869 @@
+Prompt Maestro — Aplicación Flutter para Conductores (Sistema Profesional de Tracking Logístico)
+Actúa como un equipo de expertos compuesto por:
+
+- Senior Flutter Architect
+- Mobile UX/UI Designer
+- Logistics Operations Specialist
+- Fleet Management Expert
+- Product Manager
+- Supabase Architect
+- PostgreSQL Expert
+- Mobile Security Engineer
+- Performance Engineer
+- Offline First Expert
+- QA Automation Engineer
+
+Las tablas estan en /docs/database/tracking.sql, revisala
+
+Tu misión es diseñar y desarrollar una aplicación Flutter profesional para conductores de una empresa logística, preparada para producción, conectada con Supabase y capaz de funcionar incluso sin conexión a Internet.
+
+NO quiero una aplicación básica.
+
+Quiero una aplicación comparable con las utilizadas por:
+
+- DHL
+- FedEx
+- UPS
+- Amazon Logistics
+- Uber Freight
+- Onfleet
+- Bringg
+- Samsara
+- Motive
+
+Debe estar diseñada siguiendo las mejores prácticas de Flutter, Clean Architecture, SOLID, Offline First, escalabilidad y excelente experiencia de usuario.
+
+Toda la arquitectura debe estar preparada para crecer durante años.
+
+==================================================
+STACK TECNOLÓGICO
+==================================================
+
+Flutter estable
+
+Arquitectura:
+
+• Clean Architecture
+• Feature First
+• Riverpod
+• GoRouter
+• Freezed
+• JsonSerializable
+• Dio
+• Supabase Flutter
+• Isar (cache local)
+• Geolocator
+• Permission Handler
+• Flutter Background Service
+• Background Fetch
+• WorkManager (Android)
+• Firebase Messaging
+• Local Notifications
+• Camera
+• Mobile Scanner
+• Connectivity Plus
+• Flutter Secure Storage
+• Logger
+• Intl
+
+==================================================
+ARQUITECTURA
+==================================================
+
+Diseñar una arquitectura completamente desacoplada.
+
+lib/
+
+core/
+
+config/
+
+theme/
+
+router/
+
+services/
+
+widgets/
+
+features/
+
+authentication/
+
+dashboard/
+
+trips/
+
+tracking/
+
+packages/
+
+delivery/
+
+incidents/
+
+notifications/
+
+profile/
+
+settings/
+
+offline/
+
+sync/
+
+repositories/
+
+models/
+
+domain/
+
+presentation/
+
+application/
+
+data/
+
+shared/
+
+==================================================
+AUTENTICACIÓN
+==================================================
+
+Login mediante Supabase Auth.
+
+Permitir:
+
+Email
+
+Contraseña
+
+Refresh Token
+
+Auto Login
+
+Cerrar sesión
+
+Cambio contraseña
+
+Sesión persistente
+
+Recuperar contraseña
+
+Verificación del dispositivo.
+
+==================================================
+DASHBOARD
+==================================================
+
+Crear un Dashboard moderno.
+
+Mostrar:
+
+Foto conductor
+
+Nombre
+
+Vehículo asignado
+
+Ruta actual
+
+Cantidad de entregas
+
+Pendientes
+
+Entregadas
+
+Incidencias
+
+Kilómetros recorridos
+
+Tiempo de conducción
+
+Tiempo detenido
+
+Hora inicio
+
+Hora estimada de finalización
+
+Estado actual
+
+Botón iniciar viaje
+
+Botón finalizar viaje
+
+==================================================
+GESTIÓN DE VIAJES
+==================================================
+
+Cada conductor puede tener múltiples viajes.
+
+Mostrar:
+
+Origen
+
+Destino
+
+Ruta
+
+Cantidad paquetes
+
+Estado
+
+Hora salida
+
+Hora llegada estimada
+
+Distancia
+
+Mapa
+
+Progreso
+
+Paradas
+
+==================================================
+MAPA
+==================================================
+
+Pantalla completa.
+
+Mostrar:
+
+Ruta
+
+Ubicación actual
+
+Destino
+
+Paradas
+
+Geocercas
+
+Clientes
+
+Incidencias
+
+Navegación integrada
+
+Distancia restante
+
+Tiempo estimado
+
+==================================================
+TRACKING GPS
+==================================================
+
+La aplicación debe enviar automáticamente la ubicación.
+
+Registrar:
+
+Latitud
+
+Longitud
+
+Precisión
+
+Velocidad
+
+Altitud
+
+Dirección
+
+Nivel batería
+
+Estado batería
+
+Proveedor GPS
+
+Timestamp UTC
+
+Estado conexión
+
+Enviar automáticamente.
+
+Si detenido:
+
+Cada 5 minutos.
+
+Si en movimiento:
+
+Cada 10 segundos.
+
+Si velocidad > 80 km/h:
+
+Cada 5 segundos.
+
+==================================================
+BACKGROUND TRACKING
+==================================================
+
+El GPS debe seguir funcionando aunque:
+
+Pantalla apagada.
+
+Aplicación minimizada.
+
+Teléfono bloqueado.
+
+Debe respetar las restricciones del sistema operativo.
+
+==================================================
+OFFLINE FIRST
+==================================================
+
+Toda la aplicación debe funcionar completamente offline.
+
+Guardar localmente:
+
+Ubicaciones
+
+Estados
+
+Fotos
+
+Firmas
+
+Escaneos
+
+Incidencias
+
+Entregas
+
+Comentarios
+
+Cuando vuelve Internet:
+
+Sincronizar automáticamente.
+
+Resolver conflictos.
+
+Mostrar estado sincronización.
+
+==================================================
+GESTIÓN DE PAQUETES
+==================================================
+
+Mostrar lista de paquetes.
+
+Cada paquete tendrá:
+
+Tracking Number
+
+QR
+
+Código barras
+
+Cliente
+
+Destinatario
+
+Dirección
+
+Estado
+
+Peso
+
+Prioridad
+
+Observaciones
+
+Botón detalle.
+
+==================================================
+DETALLE DEL PAQUETE
+==================================================
+
+Mostrar:
+
+Toda la información.
+
+Ubicación
+
+Fotos
+
+Historial
+
+Eventos
+
+Documentos
+
+Firmas
+
+Estado actual
+
+Tiempo estimado
+
+==================================================
+ESCÁNER QR
+==================================================
+
+Escanear:
+
+QR
+
+Código barras
+
+Tracking Number
+
+Validar automáticamente.
+
+Actualizar estado.
+
+==================================================
+ACTUALIZACIÓN DE ESTADOS
+==================================================
+
+Permitir cambiar estados.
+
+Ejemplo:
+
+Recogido
+
+En vehículo
+
+En tránsito
+
+Llegó destino
+
+Intento entrega
+
+Cliente ausente
+
+Entregado
+
+Devuelto
+
+Incidencia
+
+Cancelar
+
+Cada cambio debe generar un evento.
+
+==================================================
+ENTREGA
+==================================================
+
+La pantalla debe permitir:
+
+Firma digital.
+
+Fotografía.
+
+Nombre receptor.
+
+Documento receptor.
+
+Comentario.
+
+Código OTP.
+
+Validación GPS.
+
+Fecha.
+
+Hora.
+
+==================================================
+FIRMA DIGITAL
+==================================================
+
+Canvas para firma.
+
+Guardar imagen.
+
+Subir a Supabase Storage.
+
+==================================================
+FOTOGRAFÍAS
+==================================================
+
+Permitir:
+
+Tomar fotos.
+
+Varias fotografías.
+
+Compresión automática.
+
+Subida automática.
+
+Guardar offline.
+
+==================================================
+INCIDENCIAS
+==================================================
+
+Registrar incidencias.
+
+Ejemplos:
+
+Paquete dañado.
+
+Cliente ausente.
+
+Dirección incorrecta.
+
+Accidente.
+
+Vehículo averiado.
+
+Retraso.
+
+Pérdida señal GPS.
+
+Agregar:
+
+Fotos.
+
+Comentarios.
+
+Ubicación.
+
+==================================================
+NOTIFICACIONES
+==================================================
+
+Push Notifications.
+
+Mostrar:
+
+Nuevo viaje.
+
+Cambio ruta.
+
+Nueva entrega.
+
+Cancelación.
+
+Mensaje supervisor.
+
+==================================================
+CHAT
+==================================================
+
+Chat en tiempo real.
+
+Con supervisor.
+
+Enviar:
+
+Texto.
+
+Fotos.
+
+Ubicación.
+
+==================================================
+PERFIL
+==================================================
+
+Mostrar:
+
+Foto.
+
+Nombre.
+
+Licencia.
+
+Vehículo.
+
+Empresa.
+
+Documento.
+
+Teléfono.
+
+Estado.
+
+==================================================
+CONFIGURACIÓN
+==================================================
+
+Idioma.
+
+Tema claro.
+
+Tema oscuro.
+
+Cerrar sesión.
+
+Información aplicación.
+
+Política privacidad.
+
+==================================================
+SINCRONIZACIÓN
+==================================================
+
+Crear un centro de sincronización.
+
+Mostrar:
+
+Datos pendientes.
+
+Errores.
+
+Última sincronización.
+
+Estado Internet.
+
+Estado GPS.
+
+==================================================
+SEGURIDAD
+==================================================
+
+Implementar:
+
+Flutter Secure Storage.
+
+JWT.
+
+Refresh Token.
+
+Detección Root.
+
+Detección Debug.
+
+Protección Screenshots (Android).
+
+Logs seguros.
+
+==================================================
+SUPABASE
+==================================================
+
+Utilizar:
+
+Authentication.
+
+Realtime.
+
+Storage.
+
+RPC.
+
+Edge Functions.
+
+==================================================
+REALTIME
+==================================================
+
+Actualizar automáticamente:
+
+Viajes.
+
+Mensajes.
+
+Estados.
+
+Alertas.
+
+Ubicación.
+
+==================================================
+EXPERIENCIA DE USUARIO
+==================================================
+
+Diseño inspirado en:
+
+Uber Driver
+
+Google Maps
+
+Notion
+
+Linear
+
+Apple
+
+Material 3
+
+Debe ser:
+
+Minimalista.
+
+Muy rápida.
+
+Fácil de usar conduciendo.
+
+Botones grandes.
+
+Contraste alto.
+
+Muy pocas distracciones.
+
+Animaciones suaves.
+
+==================================================
+ACCESIBILIDAD
+==================================================
+
+Modo oscuro.
+
+Tipografía adaptable.
+
+Alto contraste.
+
+Botones accesibles.
+
+Compatibilidad con lectores de pantalla.
+
+==================================================
+RENDIMIENTO
+==================================================
+
+Optimizar para:
+
+Consumo mínimo de batería.
+
+Consumo mínimo de datos.
+
+GPS eficiente.
+
+Carga rápida.
+
+Lazy Loading.
+
+Paginación.
+
+Cache inteligente.
+
+==================================================
+ESTADOS DE LA APP
+==================================================
+
+Diseñar los flujos para:
+
+Sin GPS.
+
+Sin Internet.
+
+Permisos denegados.
+
+Token expirado.
+
+Viaje cancelado.
+
+Sin viajes asignados.
+
+Error servidor.
+
+GPS impreciso.
+
+==================================================
+TESTING
+==================================================
+
+Preparar:
+
+Unit Test.
+
+Widget Test.
+
+Integration Test.
+
+Golden Test.
+
+==================================================
+OBSERVABILIDAD
+==================================================
+
+Registrar:
+
+Logs.
+
+Errores.
+
+Crash Reports.
+
+Eventos.
+
+Tiempo respuesta.
+
+==================================================
+RESULTADO ESPERADO
+==================================================
+
+Generar absolutamente todo.
+
+✔ Arquitectura Flutter completa.
+
+✔ Árbol completo de carpetas.
+
+✔ Arquitectura Clean.
+
+✔ Feature First.
+
+✔ Navegación GoRouter.
+
+✔ Gestión de estado Riverpod.
+
+✔ Modelos Freezed.
+
+✔ DTOs.
+
+✔ Repositories.
+
+✔ Casos de uso.
+
+✔ Providers.
+
+✔ Servicios.
+
+✔ Integración Supabase.
+
+✔ Base local Isar.
+
+✔ Sistema Offline First.
+
+✔ Motor de sincronización.
+
+✔ Tracking GPS en segundo plano.
+
+✔ Flujo de autenticación.
+
+✔ Diseño UX/UI de todas las pantallas.
+
+✔ Wireframes.
+
+✔ Componentes reutilizables.
+
+✔ Tema claro y oscuro.
+
+✔ Sistema de permisos.
+
+✔ Estrategia de manejo de errores.
+
+✔ Estrategia de cache.
+
+✔ Estrategia de seguridad.
+
+✔ Estrategia de rendimiento.
+
+✔ Guía de desarrollo.
+
+✔ Convenciones de código.
+
+✔ Estrategia CI/CD.
+
+✔ Preparación para publicar en Google Play y App Store.
+
+La calidad debe ser equivalente a la aplicación oficial de un operador logístico internacional, lista para ser implementada por un equipo profesional y capaz de soportar miles de conductores simultáneamente.
+Funcionalidades premium que también debería incluir
+
+Para que la aplicación esté al nivel de las mejores soluciones del mercado, agregaría además:
+
+Checklist obligatorio antes de iniciar el viaje (estado del vehículo, combustible, neumáticos, documentación, fotos iniciales).
+Checklist al finalizar el viaje con cierre de ruta y reporte de novedades.
+Navegación integrada con Google Maps, Waze o Mapbox Navigation.
+Botón SOS/Pánico que envíe inmediatamente la ubicación al administrador.
+Modo "No molestar mientras conduce", ocultando elementos no esenciales para minimizar distracciones.
+Comandos por voz para cambiar estados o confirmar entregas sin tocar la pantalla.
+Control de jornada laboral, registrando inicio, pausas y fin del turno.
+Escaneo masivo de paquetes mediante QR o códigos de barras.
+Firma del cliente con validación GPS y sello de tiempo (Proof of Delivery).
+Registro automático de eventos del dispositivo, como batería baja, pérdida de señal GPS, pérdida de conexión o cierre inesperado de la aplicación.
+Indicador de calidad de la señal GPS para que el conductor sepa cuándo su ubicación puede ser imprecisa.
+Centro de ayuda con preguntas frecuentes, contacto con soporte y envío automático de diagnósticos técnicos. Estos detalles elevan significativamente la robustez y la experiencia de uso de la aplicación.
