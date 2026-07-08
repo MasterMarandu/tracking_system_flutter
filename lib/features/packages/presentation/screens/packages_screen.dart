@@ -1,5 +1,112 @@
 import 'package:flutter/material.dart';
 
+// ==================== MODELOS ====================
+
+enum PackageStatus { pending, inTransit, delivered }
+
+enum PackagePriority { urgent, high, normal, low }
+
+class PackageItem {
+  final String trackingNumber;
+  final String recipientName;
+  final String address;
+  final PackageStatus status;
+  final PackagePriority priority;
+  final String weight;
+  final String? notes;
+
+  const PackageItem({
+    required this.trackingNumber,
+    required this.recipientName,
+    required this.address,
+    required this.status,
+    required this.priority,
+    required this.weight,
+    this.notes,
+  });
+}
+
+// ==================== EXTENSIONES PARA UI ====================
+
+extension PackageStatusUI on PackageStatus {
+  String get label {
+    switch (this) {
+      case PackageStatus.pending:
+        return 'Pendiente';
+      case PackageStatus.inTransit:
+        return 'En tránsito';
+      case PackageStatus.delivered:
+        return 'Entregado';
+    }
+  }
+
+  Color color(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    switch (this) {
+      case PackageStatus.pending:
+        return Colors.orange;
+      case PackageStatus.inTransit:
+        return scheme.primary;
+      case PackageStatus.delivered:
+        return Colors.green;
+    }
+  }
+
+  IconData get icon {
+    switch (this) {
+      case PackageStatus.pending:
+        return Icons.schedule;
+      case PackageStatus.inTransit:
+        return Icons.local_shipping;
+      case PackageStatus.delivered:
+        return Icons.check_circle;
+    }
+  }
+}
+
+extension PackagePriorityUI on PackagePriority {
+  String get label {
+    switch (this) {
+      case PackagePriority.urgent:
+        return 'Urgente';
+      case PackagePriority.high:
+        return 'Alta';
+      case PackagePriority.normal:
+        return 'Normal';
+      case PackagePriority.low:
+        return 'Baja';
+    }
+  }
+
+  Color get color {
+    switch (this) {
+      case PackagePriority.urgent:
+        return Colors.red;
+      case PackagePriority.high:
+        return Colors.orange;
+      case PackagePriority.normal:
+        return Colors.blue;
+      case PackagePriority.low:
+        return Colors.green;
+    }
+  }
+
+  IconData get icon {
+    switch (this) {
+      case PackagePriority.urgent:
+        return Icons.priority_high;
+      case PackagePriority.high:
+        return Icons.arrow_upward;
+      case PackagePriority.normal:
+        return Icons.remove;
+      case PackagePriority.low:
+        return Icons.arrow_downward;
+    }
+  }
+}
+
+// ==================== SCREEN ====================
+
 class PackagesScreen extends StatefulWidget {
   const PackagesScreen({super.key});
 
@@ -9,60 +116,59 @@ class PackagesScreen extends StatefulWidget {
 
 class _PackagesScreenState extends State<PackagesScreen> {
   final _searchController = TextEditingController();
-  String _selectedFilter = 'All';
+  PackageStatus? _selectedFilter;
   bool _isSearching = false;
 
-  final List<String> _filters = ['All', 'Pending', 'In Transit', 'Delivered'];
-
-  final List<Map<String, dynamic>> _packages = [
-    {
-      'trackingNumber': 'PKG-2026-001',
-      'recipientName': 'John Smith',
-      'address': '123 Main St, New York, NY 10001',
-      'status': 'In Transit',
-      'priority': 'High',
-      'weight': '2.5 kg',
-    },
-    {
-      'trackingNumber': 'PKG-2026-002',
-      'recipientName': 'Sarah Johnson',
-      'address': '456 Oak Ave, Los Angeles, CA 90001',
-      'status': 'Pending',
-      'priority': 'Normal',
-      'weight': '1.2 kg',
-    },
-    {
-      'trackingNumber': 'PKG-2026-003',
-      'recipientName': 'Michael Brown',
-      'address': '789 Pine Rd, Chicago, IL 60601',
-      'status': 'Delivered',
-      'priority': 'Low',
-      'weight': '5.0 kg',
-    },
-    {
-      'trackingNumber': 'PKG-2026-004',
-      'recipientName': 'Emily Davis',
-      'address': '321 Elm St, Houston, TX 77001',
-      'status': 'In Transit',
-      'priority': 'Urgent',
-      'weight': '3.8 kg',
-    },
-    {
-      'trackingNumber': 'PKG-2026-005',
-      'recipientName': 'Robert Wilson',
-      'address': '654 Maple Dr, Phoenix, AZ 85001',
-      'status': 'Pending',
-      'priority': 'Normal',
-      'weight': '0.8 kg',
-    },
-    {
-      'trackingNumber': 'PKG-2026-006',
-      'recipientName': 'Lisa Anderson',
-      'address': '987 Cedar Ln, Philadelphia, PA 19101',
-      'status': 'Delivered',
-      'priority': 'High',
-      'weight': '4.2 kg',
-    },
+  // Datos simulados — en producción vendrían de un BLoC/Provider
+  final List<PackageItem> _packages = const [
+    PackageItem(
+      trackingNumber: 'PKG-2026-001',
+      recipientName: 'Juan García',
+      address: 'Av. Principal 123, Col. Centro',
+      status: PackageStatus.inTransit,
+      priority: PackagePriority.high,
+      weight: '2.5 kg',
+    ),
+    PackageItem(
+      trackingNumber: 'PKG-2026-002',
+      recipientName: 'María López',
+      address: 'Calle Roble 456, Col. Norte',
+      status: PackageStatus.pending,
+      priority: PackagePriority.normal,
+      weight: '1.2 kg',
+    ),
+    PackageItem(
+      trackingNumber: 'PKG-2026-003',
+      recipientName: 'Carlos Hernández',
+      address: 'Blvd. Pinos 789, Zona Industrial',
+      status: PackageStatus.delivered,
+      priority: PackagePriority.low,
+      weight: '5.0 kg',
+    ),
+    PackageItem(
+      trackingNumber: 'PKG-2026-004',
+      recipientName: 'Ana Martínez',
+      address: 'Calle Olmo 321, Col. Sur',
+      status: PackageStatus.inTransit,
+      priority: PackagePriority.urgent,
+      weight: '3.8 kg',
+    ),
+    PackageItem(
+      trackingNumber: 'PKG-2026-005',
+      recipientName: 'Roberto Sánchez',
+      address: 'Av. Arces 654, Col. Poniente',
+      status: PackageStatus.pending,
+      priority: PackagePriority.normal,
+      weight: '0.8 kg',
+    ),
+    PackageItem(
+      trackingNumber: 'PKG-2026-006',
+      recipientName: 'Laura Torres',
+      address: 'Calle Cedro 987, Col. Oriente',
+      status: PackageStatus.delivered,
+      priority: PackagePriority.high,
+      weight: '4.2 kg',
+    ),
   ];
 
   @override
@@ -71,72 +177,43 @@ class _PackagesScreenState extends State<PackagesScreen> {
     super.dispose();
   }
 
-  List<Map<String, dynamic>> get _filteredPackages {
+  List<PackageItem> get _filteredPackages {
     var filtered = _packages;
-    if (_selectedFilter != 'All') {
-      filtered = filtered.where((p) => p['status'] == _selectedFilter).toList();
+
+    // Filtro por estado
+    if (_selectedFilter != null) {
+      filtered = filtered.where((p) => p.status == _selectedFilter).toList();
     }
+
+    // Filtro por búsqueda
     if (_searchController.text.isNotEmpty) {
       final query = _searchController.text.toLowerCase();
       filtered = filtered.where((p) {
-        return p['trackingNumber'].toLowerCase().contains(query) ||
-            p['recipientName'].toLowerCase().contains(query) ||
-            p['address'].toLowerCase().contains(query);
+        return p.trackingNumber.toLowerCase().contains(query) ||
+            p.recipientName.toLowerCase().contains(query) ||
+            p.address.toLowerCase().contains(query);
       }).toList();
     }
+
     return filtered;
   }
 
-  Color _getStatusColor(String status) {
-    switch (status) {
-      case 'Pending':
-        return const Color(0xFFFFC107);
-      case 'In Transit':
-        return const Color(0xFF2196F3);
-      case 'Delivered':
-        return const Color(0xFF4CAF50);
-      default:
-        return Colors.grey;
-    }
-  }
-
-  IconData _getPriorityIcon(String priority) {
-    switch (priority) {
-      case 'Urgent':
-        return Icons.error;
-      case 'High':
-        return Icons.keyboard_arrow_up;
-      case 'Normal':
-        return Icons.remove;
-      case 'Low':
-        return Icons.keyboard_arrow_down;
-      default:
-        return Icons.remove;
-    }
-  }
-
-  Color _getPriorityColor(String priority) {
-    switch (priority) {
-      case 'Urgent':
-        return const Color(0xFFF44336);
-      case 'High':
-        return const Color(0xFFFF9800);
-      case 'Normal':
-        return const Color(0xFF2196F3);
-      case 'Low':
-        return const Color(0xFF4CAF50);
-      default:
-        return Colors.grey;
-    }
+  // Contadores para badges en filtros
+  int _countByStatus(PackageStatus? status) {
+    if (status == null) return _packages.length;
+    return _packages.where((p) => p.status == status).length;
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Packages'),
+        title: const Text('Paquetes'),
         actions: [
           IconButton(
+            tooltip: _isSearching ? 'Cerrar búsqueda' : 'Buscar paquete',
             icon: Icon(_isSearching ? Icons.close : Icons.search),
             onPressed: () {
               setState(() {
@@ -146,272 +223,447 @@ class _PackagesScreenState extends State<PackagesScreen> {
             },
           ),
           IconButton(
-            icon: const Icon(Icons.filter_list),
-            onPressed: () {
-              showModalBottomSheet(
-                context: context,
-                builder: (context) => _buildFilterSheet(),
-              );
-            },
+            tooltip: 'Más opciones',
+            icon: const Icon(Icons.more_vert),
+            onPressed: () {},
           ),
         ],
       ),
       body: Column(
         children: [
-          if (_isSearching)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: TextField(
-                controller: _searchController,
-                autofocus: true,
-                decoration: InputDecoration(
-                  hintText: 'Search by tracking #, name, or address',
-                  prefixIcon: const Icon(Icons.search),
-                  suffixIcon: _searchController.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear),
-                          onPressed: () {
-                            setState(() => _searchController.clear());
-                          },
-                        )
-                      : null,
-                ),
-                onChanged: (_) => setState(() {}),
+          // Barra de búsqueda animada
+          _buildSearchBar(theme),
+
+          // Filtros horizontales con contadores
+          _buildFilters(theme),
+
+          // Contador de resultados
+          _buildResultsCount(theme),
+
+          // Lista de paquetes
+          Expanded(child: _buildPackageList(theme)),
+        ],
+      ),
+    );
+  }
+
+  // ==================== SEARCH BAR ====================
+  Widget _buildSearchBar(ThemeData theme) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+      height: _isSearching ? 64 : 0,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 200),
+        opacity: _isSearching ? 1.0 : 0.0,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: TextField(
+            controller: _searchController,
+            autofocus: _isSearching,
+            decoration: InputDecoration(
+              hintText: 'Buscar por tracking, nombre o dirección...',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _searchController.text.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () =>
+                          setState(() => _searchController.clear()),
+                    )
+                  : null,
+              filled: true,
+              fillColor: theme.colorScheme.surfaceContainerHighest.withOpacity(
+                0.5,
               ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 0),
             ),
-          SizedBox(
-            height: 56,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              itemCount: _filters.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (context, index) {
-                final filter = _filters[index];
-                final isSelected = _selectedFilter == filter;
-                return FilterChip(
-                  label: Text(filter),
-                  selected: isSelected,
-                  onSelected: (_) {
-                    setState(() => _selectedFilter = filter);
-                  },
-                  selectedColor: Theme.of(context).colorScheme.primaryContainer,
-                  showCheckmark: false,
-                );
-              },
+            onChanged: (_) => setState(() {}),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ==================== FILTERS ====================
+  Widget _buildFilters(ThemeData theme) {
+    final filters = <PackageStatus?>[null, ...PackageStatus.values];
+
+    return SizedBox(
+      height: 52,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        itemCount: filters.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final filter = filters[index];
+          final isSelected = _selectedFilter == filter;
+          final count = _countByStatus(filter);
+          final label = filter?.label ?? 'Todos';
+
+          return FilterChip(
+            label: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(label),
+                const SizedBox(width: 6),
+                // Badge con contador
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? theme.colorScheme.onPrimaryContainer.withOpacity(0.15)
+                        : theme.colorScheme.onSurface.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$count',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: isSelected
+                          ? theme.colorScheme.onPrimaryContainer
+                          : theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            selected: isSelected,
+            onSelected: (_) => setState(() => _selectedFilter = filter),
+            selectedColor: theme.colorScheme.primaryContainer,
+            showCheckmark: false,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ==================== RESULTS COUNT ====================
+  Widget _buildResultsCount(ThemeData theme) {
+    final count = _filteredPackages.length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+      child: Row(
+        children: [
+          Text(
+            '$count paquete${count != 1 ? 's' : ''} encontrado${count != 1 ? 's' : ''}',
+            style: TextStyle(
+              fontSize: 13,
+              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w500,
             ),
           ),
-          Expanded(
-            child: _filteredPackages.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.inventory_2_outlined,
-                          size: 64,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withOpacity(0.3),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No packages found',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyLarge
-                              ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withOpacity(0.5),
-                              ),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _filteredPackages.length,
-                    itemBuilder: (context, index) {
-                      final package = _filteredPackages[index];
-                      return _PackageCard(
-                        trackingNumber: package['trackingNumber'],
-                        recipientName: package['recipientName'],
-                        address: package['address'],
-                        status: package['status'],
-                        priority: package['priority'],
-                        statusColor: _getStatusColor(package['status']),
-                        priorityIcon: _getPriorityIcon(package['priority']),
-                        priorityColor: _getPriorityColor(package['priority']),
-                        onTap: () {
-                          print('Tapped package: ${package['trackingNumber']}');
-                        },
-                      );
-                    },
-                  ),
+          const Spacer(),
+          // Botón para escanear rápido
+          TextButton.icon(
+            onPressed: () {},
+            icon: const Icon(Icons.qr_code_scanner, size: 18),
+            label: const Text('Escanear'),
+            style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildFilterSheet() {
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              'Filter Packages',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+  // ==================== PACKAGE LIST ====================
+  Widget _buildPackageList(ThemeData theme) {
+    final packages = _filteredPackages;
+
+    if (packages.isEmpty) {
+      return _buildEmptyState(theme);
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      itemCount: packages.length,
+      itemBuilder: (context, index) {
+        return _PackageCard(
+          package: packages[index],
+          onTap: () => _onPackageTap(packages[index]),
+        );
+      },
+    );
+  }
+
+  Widget _buildEmptyState(ThemeData theme) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.inventory_2_outlined,
+                size: 40,
+                color: theme.colorScheme.onSurfaceVariant.withOpacity(0.5),
+              ),
             ),
-          ),
-          ...ListTile.divideTiles(
-            context: context,
-            tiles: _filters.map((filter) {
-              return ListTile(
-                title: Text(filter),
-                trailing: _selectedFilter == filter
-                    ? Icon(Icons.check,
-                        color: Theme.of(context).colorScheme.primary)
-                    : null,
-                onTap: () {
-                  setState(() => _selectedFilter = filter);
-                  Navigator.pop(context);
-                },
-              );
-            }),
-          ),
-          const SizedBox(height: 16),
-        ],
+            const SizedBox(height: 20),
+            Text(
+              'Sin resultados',
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: theme.colorScheme.onSurface,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'No se encontraron paquetes con los filtros aplicados.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 20),
+            OutlinedButton(
+              onPressed: () {
+                setState(() {
+                  _selectedFilter = null;
+                  _searchController.clear();
+                });
+              },
+              child: const Text('Limpiar filtros'),
+            ),
+          ],
+        ),
       ),
     );
+  }
+
+  void _onPackageTap(PackageItem package) {
+    debugPrint('Tapped: ${package.trackingNumber}');
   }
 }
 
+// ==================== PACKAGE CARD ====================
+
 class _PackageCard extends StatelessWidget {
-  final String trackingNumber;
-  final String recipientName;
-  final String address;
-  final String status;
-  final String priority;
-  final Color statusColor;
-  final IconData priorityIcon;
-  final Color priorityColor;
+  final PackageItem package;
   final VoidCallback onTap;
 
-  const _PackageCard({
-    required this.trackingNumber,
-    required this.recipientName,
-    required this.address,
-    required this.status,
-    required this.priority,
-    required this.statusColor,
-    required this.priorityIcon,
-    required this.priorityColor,
-    required this.onTap,
-  });
+  const _PackageCard({required this.package, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: InkWell(
-        onTap: onTap,
+    final theme = Theme.of(context);
+    final statusColor = package.status.color(context);
+    final priorityColor = package.priority.color;
+    final isUrgent = package.priority == PackagePriority.urgent;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: theme.cardColor,
         borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .primaryContainer
-                      .withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  Icons.inventory_2_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: isUrgent
+                    ? Colors.red.withOpacity(0.4)
+                    : theme.dividerColor.withOpacity(0.15),
+                width: isUrgent ? 1.5 : 1,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Icono de estado a la izquierda
+                  _buildStatusIcon(theme, statusColor),
+                  const SizedBox(width: 14),
+
+                  // Contenido principal
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // Fila superior: tracking + status chip
+                        _buildTopRow(theme, statusColor),
+                        const SizedBox(height: 6),
+
+                        // Nombre del destinatario
                         Text(
-                          trackingNumber,
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w600),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: statusColor.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            status,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: statusColor,
-                            ),
+                          package.recipientName,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
+                        const SizedBox(height: 2),
+
+                        // Dirección
+                        Text(
+                          package.address,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 10),
+
+                        // Fila inferior: peso + prioridad
+                        _buildBottomRow(theme, priorityColor),
                       ],
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      recipientName,
-                      style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+
+                  // Flecha de navegación
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Icon(
+                      Icons.chevron_right,
+                      color: theme.colorScheme.onSurfaceVariant.withOpacity(
+                        0.4,
+                      ),
                     ),
-                    const SizedBox(height: 2),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            address,
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
-                                ?.copyWith(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurface
-                                      .withOpacity(0.6),
-                                ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Icon(
-                          priorityIcon,
-                          size: 16,
-                          color: priorityColor,
-                        ),
-                      ],
-                    ),
-                  ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusIcon(ThemeData theme, Color statusColor) {
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        color: statusColor.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Icon(package.status.icon, color: statusColor, size: 22),
+    );
+  }
+
+  Widget _buildTopRow(ThemeData theme, Color statusColor) {
+    return Row(
+      children: [
+        Text(
+          package.trackingNumber,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: theme.colorScheme.onSurfaceVariant,
+            letterSpacing: 0.3,
+          ),
+        ),
+        const Spacer(),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: statusColor.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            package.status.label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: statusColor,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBottomRow(ThemeData theme, Color priorityColor) {
+    return Row(
+      children: [
+        // Peso
+        _InfoChip(icon: Icons.scale, label: package.weight, theme: theme),
+        const SizedBox(width: 8),
+
+        // Prioridad
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: priorityColor.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(package.priority.icon, size: 12, color: priorityColor),
+              const SizedBox(width: 4),
+              Text(
+                package.priority.label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: priorityColor,
                 ),
               ),
             ],
           ),
         ),
+      ],
+    );
+  }
+}
+
+// ==================== CHIPS AUXILIARES ====================
+
+class _InfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final ThemeData theme;
+
+  const _InfoChip({
+    required this.icon,
+    required this.label,
+    required this.theme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
       ),
     );
   }
