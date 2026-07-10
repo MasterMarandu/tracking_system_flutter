@@ -3,12 +3,14 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap.dart';
 import 'package:tracking_system_app/features/dashboard/providers/bootstrap_provider.dart';
+import 'package:tracking_system_app/features/sync/domain/sync_engine.dart';
 
 // ============================================================================
 // MODELS — Aligned with tracking.sql schema
 // ============================================================================
 
 enum TripState {
+  noTrip,
   preTrip,
   inRoute,
   geofenceEntry,
@@ -327,11 +329,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     if (!mounted) return;
     final b = bootstrap;
 
+    debugPrint(
+      'Bootstrap apply: '
+      'active=${b?.user.active}, '
+      'name="${b?.user.name}", '
+      'trip=${b?.trip?.id}',
+    );
+
     if (b == null || !b.user.active) {
       _tripData = _emptyTripData();
       _deviceStatus = const DeviceStatus(gps: false, internet: false, synced: false);
       _checklistItems = const [];
-      _tripState = TripState.preTrip;
+      _tripState = TripState.noTrip;
       _progressAnim = _createProgressAnim(0);
       return;
     }
@@ -350,8 +359,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
         _defaultChecklistItems();
 
     if (b.trip == null) {
-      _tripData = _emptyTripData();
-      _tripState = TripState.preTrip;
+      _tripData = _emptyTripData().copyWith(
+        driverName: b.user.name,
+      );
+      _tripState = TripState.noTrip;
       _progressAnim = _createProgressAnim(0);
       return;
     }
@@ -602,17 +613,29 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   @override
   Widget build(BuildContext context) {
     final bootstrapAsync = ref.watch(bootstrapProvider);
+    final syncState = ref.watch(syncEngineProvider);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+
+    // Override deviceStatus with real sync state
+    final effectiveDeviceStatus = DeviceStatus(
+      gps: _deviceStatus.gps,
+      internet: syncState.isOnline,
+      synced: syncState.status == SyncStatus.idle &&
+          syncState.pendingOperations == 0,
+      batteryPercent: _deviceStatus.batteryPercent,
+      vehiclePlate: _deviceStatus.vehiclePlate,
+    );
 
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
             _OperationStatusBar(
-              status: _deviceStatus,
+              status: effectiveDeviceStatus,
               isDark: isDark,
               tripState: _tripState,
+              pendingSyncCount: syncState.pendingOperations,
             ),
             Expanded(
               child: bootstrapAsync.when(
@@ -753,12 +776,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: () async {
-                    await _refreshData();
-                    if (mounted) {
-                      ref.read(bootstrapProvider.notifier).loadBootstrap();
-                    }
-                  },
+                  onPressed: _refreshData,
                   icon: const Icon(Icons.refresh),
                   label: const Text('ACTUALIZAR'),
                   style: ElevatedButton.styleFrom(
@@ -851,23 +869,25 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
               ],
             ),
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              _deviceStatus.vehiclePlate,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: theme.colorScheme.primary,
-                letterSpacing: 0.5,
+          if (_deviceStatus.vehiclePlate.trim().isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                _deviceStatus.vehiclePlate,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.primary,
+                  letterSpacing: 0.5,
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 4),
+            const SizedBox(width: 4),
+          ],
           IconButton(
             tooltip: 'Notificaciones',
             onPressed: () {},
@@ -1894,6 +1914,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   List<_ActionDef> _getContextualActions() {
     switch (_tripState) {
+      case TripState.noTrip:
+        return [
+          _ActionDef(Icons.phone, 'Soporte', Colors.green, () {}),
+          _ActionDef(Icons.info_outline, 'Info', Colors.blue, () {}),
+        ];
       case TripState.preTrip:
         return [
           _ActionDef(Icons.checklist, 'Checklist', Colors.purple,
@@ -2175,11 +2200,13 @@ class _OperationStatusBar extends StatelessWidget {
   final DeviceStatus status;
   final bool isDark;
   final TripState tripState;
+  final int pendingSyncCount;
 
   const _OperationStatusBar({
     required this.status,
     required this.isDark,
     required this.tripState,
+    this.pendingSyncCount = 0,
   });
 
   @override
@@ -2188,7 +2215,7 @@ class _OperationStatusBar extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (!status.internet || !status.gps || !status.synced)
+        if (!status.internet)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 6),
@@ -2203,6 +2230,44 @@ class _OperationStatusBar extends StatelessWidget {
                         color: Colors.white,
                         fontSize: 11,
                         fontWeight: FontWeight.w600)),
+              ],
+            ),
+          )
+        else if (!status.gps)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            color: Colors.orange.withValues(alpha: 0.85),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.gps_off, color: Colors.white, size: 16),
+                SizedBox(width: 8),
+                Text('GPS DESACTIVADO - Activa el GPS para tracking en tiempo real',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600)),
+              ],
+            ),
+          )
+        else if (pendingSyncCount > 0)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            color: Colors.amber.withValues(alpha: 0.85),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.sync_problem, color: Colors.black87, size: 16),
+                const SizedBox(width: 8),
+                Text(
+                  '$pendingSyncCount CAMBIOS PENDIENTES DE SINCRONIZAR',
+                  style: const TextStyle(
+                      color: Colors.black87,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600),
+                ),
               ],
             ),
           ),
@@ -2300,6 +2365,9 @@ class _OperationStatusBar extends StatelessWidget {
     String label;
     Color color;
     switch (tripState) {
+      case TripState.noTrip:
+        label = 'DISPONIBLE';
+        color = Colors.teal;
       case TripState.preTrip:
         label = 'PRE-VIAJE';
         color = Colors.grey;
@@ -2467,6 +2535,8 @@ class _PrimaryActionButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     switch (tripState) {
+      case TripState.noTrip:
+        return const SizedBox.shrink();
       case TripState.preTrip:
         return Column(
           children: [
