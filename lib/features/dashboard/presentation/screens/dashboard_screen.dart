@@ -247,9 +247,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   bool get _isChecklistComplete => _checklistItems.every((i) => i.isDone);
 
-  late TripData _tripData;
-  late DeviceStatus _deviceStatus;
-  late List<ChecklistItem> _checklistItems;
+  late TripData _tripData = _emptyTripData();
+  late DeviceStatus _deviceStatus = const DeviceStatus();
+  late List<ChecklistItem> _checklistItems = _defaultChecklistItems();
 
   static const _activities = <RecentActivity>[
     RecentActivity(
@@ -279,7 +279,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
       List.generate(_tripData.packages, (i) => 'TRK-2026-${7000 + i}');
 
   String? _lastAppliedTripId;
-  ProviderSubscription<DriverBootstrap?>? _bootstrapSubscription;
+  ProviderSubscription<AsyncValue<DriverBootstrap?>>? _bootstrapSubscription;
 
   @override
   void initState() {
@@ -289,16 +289,22 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
       duration: const Duration(milliseconds: 1200),
     );
 
-    final initial = ref.read(bootstrapProvider);
-    _applyBootstrap(initial);
-    _progressAnimation.forward();
+    final initialAsync = ref.read(bootstrapProvider);
+    final initial = initialAsync.valueOrNull;
+    if (initial != null) {
+      _applyBootstrap(initial);
+      _progressAnimation.forward();
+    }
 
-    _bootstrapSubscription = ref.listenManual(
+    _bootstrapSubscription = ref.listenManual<AsyncValue<DriverBootstrap?>>(
       bootstrapProvider,
       (previous, next) {
-        if (!mounted || next == null) return;
-        _onBootstrapChanged(next);
+        if (!mounted) return;
+        final bootstrap = next.valueOrNull;
+        if (bootstrap == null) return;
+        _onBootstrapChanged(bootstrap);
       },
+      fireImmediately: true,
     );
   }
 
@@ -378,6 +384,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
           : 0,
     );
 
+    // Reset delivery state FIRST when trip changes
+    final newTripId = b.trip?.id;
+    if (newTripId != _lastAppliedTripId) {
+      _lastAppliedTripId = newTripId;
+      _resetDeliveryState();
+    }
+
+    // THEN restore delivery session (if applicable)
     final sessionState = b.resolveState();
     switch (sessionState) {
       case DriverSessionState.tripReady:
@@ -398,12 +412,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     }
 
     _progressAnim = _createProgressAnim(_tripData.progressPercent);
-
-    final newTripId = b.trip?.id;
-    if (newTripId != _lastAppliedTripId) {
-      _lastAppliedTripId = newTripId;
-      _resetDeliveryState();
-    }
   }
 
   void _completeCurrentDelivery() {
@@ -593,7 +601,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
 
   @override
   Widget build(BuildContext context) {
-    final bootstrap = ref.watch(bootstrapProvider);
+    final bootstrapAsync = ref.watch(bootstrapProvider);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
@@ -607,13 +615,22 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
               tripState: _tripState,
             ),
             Expanded(
-              child: bootstrap == null
-                  ? _buildLoadingScreen()
-                  : !bootstrap.user.active
-                      ? _buildNoTripScreen(context, null)
-                      : bootstrap.trip == null
-                          ? _buildNoTripScreen(context, bootstrap)
-                          : _buildActiveTrip(context),
+              child: bootstrapAsync.when(
+                loading: () => _buildLoadingScreen(),
+                error: (error, _) => _buildErrorScreen(error),
+                data: (bootstrap) {
+                  if (bootstrap == null) {
+                    return _buildNoTripScreen(context, null);
+                  }
+                  if (!bootstrap.user.active) {
+                    return _buildNoTripScreen(context, null);
+                  }
+                  if (bootstrap.trip == null) {
+                    return _buildNoTripScreen(context, bootstrap);
+                  }
+                  return _buildActiveTrip(context);
+                },
+              ),
             ),
           ],
         ),
@@ -630,6 +647,40 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
           SizedBox(height: 16),
           Text('Cargando tu jornada...'),
         ],
+      ),
+    );
+  }
+
+  Widget _buildErrorScreen(Object error) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.cloud_off, size: 64, color: Colors.grey),
+            const SizedBox(height: 16),
+            const Text(
+              'No se pudo cargar tu jornada',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              error.toString(),
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: () {
+                ref.read(bootstrapProvider.notifier).loadBootstrap();
+              },
+              icon: const Icon(Icons.refresh),
+              label: const Text('REINTENTAR'),
+            ),
+          ],
+        ),
       ),
     );
   }

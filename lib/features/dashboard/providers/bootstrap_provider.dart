@@ -1,10 +1,9 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tracking_system_app/core/config/supabase_config.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap_service.dart';
-import 'package:tracking_system_app/features/sync/data/sync_repository.dart';
-import 'package:tracking_system_app/features/sync/domain/sync_engine.dart';
 
 enum AppAuthStatus { unknown, authenticated, unauthenticated }
 
@@ -15,35 +14,60 @@ class AppAuthState {
   const AppAuthState({this.status = AppAuthStatus.unknown, this.user});
 }
 
-class BootstrapNotifier extends StateNotifier<DriverBootstrap?> {
-  final SyncRepository _syncRepository;
+class BootstrapNotifier extends AsyncNotifier<DriverBootstrap?> {
+  @override
+  Future<DriverBootstrap?> build() async {
+    final session = SupabaseConfig.client.auth.currentSession;
+    if (session == null) return null;
+    return _load();
+  }
 
-  BootstrapNotifier(this._syncRepository) : super(null);
+  Future<DriverBootstrap?> _load() async {
+    debugPrint('Bootstrap: iniciando carga');
 
-  Future<void> loadBootstrap({bool forceRefresh = false}) async {
     try {
-      final bootstrap = await _syncRepository.loadBootstrap(
-        forceRefresh: forceRefresh,
-      );
-      state = bootstrap;
-    } catch (_) {
-      // Try direct service call as last resort
+      final result = await DriverBootstrapService.instance
+          .fetchBootstrap()
+          .timeout(const Duration(seconds: 15));
+
+      debugPrint('Bootstrap: respuesta recibida: $result');
+      return result;
+    } catch (e) {
+      debugPrint('Bootstrap ERROR: $e');
+
+      // Try fallback
       try {
-        final bootstrap =
-            await DriverBootstrapService.instance.fetchBootstrap();
-        state = bootstrap;
-      } catch (_) {
-        state = null;
+        debugPrint('Bootstrap: intentando fallback');
+        final fallback = await DriverBootstrapService.instance
+            .fetchBootstrapFallback()
+            .timeout(const Duration(seconds: 15));
+        debugPrint('Bootstrap: fallback recibido: $fallback');
+        return fallback;
+      } catch (e2) {
+        debugPrint('Bootstrap FALLBACK ERROR: $e2');
+        rethrow;
       }
     }
   }
 
+  Future<void> loadBootstrap() async {
+    final session = SupabaseConfig.client.auth.currentSession;
+    if (session == null) {
+      state = const AsyncData(null);
+      return;
+    }
+
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(() => _load());
+  }
+
   Future<void> forceRefresh() async {
-    state = await _syncRepository.forceRefresh();
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(() => _load());
   }
 
   void clear() {
-    state = null;
+    state = const AsyncData(null);
   }
 }
 
@@ -87,13 +111,12 @@ class AuthNotifier extends StateNotifier<AppAuthState> {
 }
 
 final bootstrapProvider =
-    StateNotifierProvider<BootstrapNotifier, DriverBootstrap?>((ref) {
-  final syncRepo = ref.watch(syncRepositoryProvider);
-  return BootstrapNotifier(syncRepo);
-});
+    AsyncNotifierProvider<BootstrapNotifier, DriverBootstrap?>(
+  BootstrapNotifier.new,
+);
 
 final driverSessionStateProvider = Provider<DriverSessionState>((ref) {
-  final bootstrap = ref.watch(bootstrapProvider);
+  final bootstrap = ref.watch(bootstrapProvider).valueOrNull;
   if (bootstrap == null) return DriverSessionState.loading;
   if (!bootstrap.user.active) return DriverSessionState.profileIncomplete;
   return bootstrap.resolveState();

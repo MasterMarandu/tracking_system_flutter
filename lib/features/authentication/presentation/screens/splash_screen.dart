@@ -55,7 +55,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
     if (!mounted) return;
 
-    final bootstrap = ref.read(bootstrapProvider);
+    final bootstrap = ref.read(bootstrapProvider).valueOrNull;
 
     if (bootstrap == null) {
       setState(() => _statusMessage = 'Error de conexión');
