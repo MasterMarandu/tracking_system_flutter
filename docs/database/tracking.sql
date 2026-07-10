@@ -328,6 +328,62 @@ CREATE INDEX idx_mantenimientos_estado ON fleet_mantenimientos(estado);
 CREATE TRIGGER update_mantenimientos_updated_at BEFORE UPDATE ON fleet_mantenimientos
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Tabla: checklists (pre-viaje / post-viaje)
+CREATE TABLE fleet_checklists (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
+    viaje_id UUID,
+    vehiculo_id UUID NOT NULL REFERENCES fleet_vehiculos(id),
+    conductor_id UUID REFERENCES fleet_conductores(id),
+    tipo VARCHAR(30) NOT NULL CHECK (tipo IN ('pre_viaje', 'post_viaje', 'mantenimiento')),
+    estado VARCHAR(20) DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'en_proceso', 'completado', 'con_observaciones')),
+    fecha_inicio TIMESTAMP WITH TIME ZONE,
+    fecha_fin TIMESTAMP WITH TIME ZONE,
+    observaciones TEXT,
+    kilometraje INTEGER,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_checklists_empresa ON fleet_checklists(empresa_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_checklists_viaje ON fleet_checklists(viaje_id);
+CREATE INDEX idx_checklists_vehiculo ON fleet_checklists(vehiculo_id);
+CREATE INDEX idx_checklists_estado ON fleet_checklists(estado);
+
+CREATE TRIGGER update_checklists_updated_at BEFORE UPDATE ON fleet_checklists
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: checklists_items (items del checklist)
+CREATE TABLE fleet_checklists_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    checklist_id UUID NOT NULL REFERENCES fleet_checklists(id) ON DELETE CASCADE,
+    nombre VARCHAR(255) NOT NULL,
+    categoria VARCHAR(100),
+    orden INTEGER DEFAULT 0,
+    estado VARCHAR(20) DEFAULT 'ok' CHECK (estado IN ('ok', 'observacion', 'fallo')),
+    observacion TEXT,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_checklist_items_checklist ON fleet_checklists_items(checklist_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_checklist_items_estado ON fleet_checklists_items(estado);
+
+CREATE TRIGGER update_checklist_items_updated_at BEFORE UPDATE ON fleet_checklists_items
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- ============================================================================
 -- MÓDULO: CUSTOMERS
 -- ============================================================================
@@ -468,6 +524,33 @@ CREATE INDEX idx_geocercas_poligono ON operations_geocercas USING GIST(poligono)
 CREATE TRIGGER update_geocercas_updated_at BEFORE UPDATE ON operations_geocercas
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Tabla: geocercas_vinculos (vincular geocercas a clientes, direcciones, sucursales)
+CREATE TABLE operations_geocercas_vinculos (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
+    geocerca_id UUID NOT NULL REFERENCES operations_geocercas(id) ON DELETE CASCADE,
+    referencia_tipo VARCHAR(50) NOT NULL CHECK (referencia_tipo IN (
+        'cliente', 'direccion', 'sucursal', 'otra'
+    )),
+    referencia_id UUID NOT NULL,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID,
+    
+    CONSTRAINT unique_geocerca_vinculo UNIQUE (geocerca_id, referencia_tipo, referencia_id)
+);
+
+CREATE INDEX idx_geocercas_vinc_geocerca ON operations_geocercas_vinculos(geocerca_id);
+CREATE INDEX idx_geocercas_vinc_referencia ON operations_geocercas_vinculos(referencia_tipo, referencia_id);
+
+CREATE TRIGGER update_geocercas_vinculos_updated_at BEFORE UPDATE ON operations_geocercas_vinculos
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Tabla: rutas
 CREATE TABLE operations_rutas (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -493,6 +576,36 @@ CREATE INDEX idx_rutas_empresa ON operations_rutas(empresa_id) WHERE deleted_at 
 CREATE INDEX idx_rutas_codigo ON operations_rutas(codigo);
 
 CREATE TRIGGER update_rutas_updated_at BEFORE UPDATE ON operations_rutas
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: rutas_optimizadas (guardar ruta calculada por proveedor de mapas)
+CREATE TABLE operations_rutas_optimizadas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
+    ruta_id UUID NOT NULL REFERENCES operations_rutas(id) ON DELETE CASCADE,
+    proveedor VARCHAR(50) NOT NULL CHECK (proveedor IN ('google', 'osrm', 'mapbox', 'here', 'otro')),
+    distancia_km DECIMAL(10, 2),
+    tiempo_estimado_min INTEGER,
+    polyline TEXT,
+    waypoints JSONB,
+    algoritmo VARCHAR(50),
+    fecha_calculo TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    es_activa BOOLEAN DEFAULT TRUE,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_rutas_opt_empresa ON operations_rutas_optimizadas(empresa_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_rutas_opt_ruta ON operations_rutas_optimizadas(ruta_id);
+CREATE INDEX idx_rutas_opt_activa ON operations_rutas_optimizadas(es_activa) WHERE es_activa = TRUE AND deleted_at IS NULL;
+
+CREATE TRIGGER update_rutas_optimizadas_updated_at BEFORE UPDATE ON operations_rutas_optimizadas
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Tabla: paradas
@@ -526,27 +639,63 @@ CREATE INDEX idx_paradas_ubicacion ON operations_paradas USING GIST(ubicacion);
 CREATE TRIGGER update_paradas_updated_at BEFORE UPDATE ON operations_paradas
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Tabla: ETA (estimacion de llegada por parada)
+CREATE TABLE operations_eta (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
+    viaje_id UUID NOT NULL,
+    parada_id UUID NOT NULL REFERENCES operations_paradas(id) ON DELETE CASCADE,
+    eta_original TIMESTAMP WITH TIME ZONE,
+    eta_actual TIMESTAMP WITH TIME ZONE,
+    retraso_min INTEGER DEFAULT 0,
+    distancia_restante_km DECIMAL(10, 2),
+    ultima_actualizacion TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_eta_empresa ON operations_eta(empresa_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_eta_viaje ON operations_eta(viaje_id);
+CREATE INDEX idx_eta_parada ON operations_eta(parada_id);
+
+CREATE TRIGGER update_eta_updated_at BEFORE UPDATE ON operations_eta
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Tabla: viajes
 CREATE TABLE operations_viajes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
     codigo VARCHAR(50) UNIQUE NOT NULL,
-    conductor_id UUID REFERENCES fleet_conductores(id),
-    vehiculo_id UUID REFERENCES fleet_vehiculos(id),
     ruta_id UUID REFERENCES operations_rutas(id),
     fecha_inicio TIMESTAMP WITH TIME ZONE,
     fecha_fin TIMESTAMP WITH TIME ZONE,
+    hora_programada_salida TIMESTAMP WITH TIME ZONE,
+    hora_real_salida TIMESTAMP WITH TIME ZONE,
+    hora_programada_llegada TIMESTAMP WITH TIME ZONE,
+    hora_real_llegada TIMESTAMP WITH TIME ZONE,
     estado VARCHAR(30) DEFAULT 'programado' CHECK (estado IN (
         'programado', 'en_curso', 'pausado', 'completado', 'cancelado'
     )),
     km_estimados DECIMAL(10, 2),
     km_reales DECIMAL(10, 2),
+    distancia_real_km DECIMAL(10, 2),
     tiempo_estimado_min INTEGER,
     tiempo_real_min INTEGER,
+    tiempo_detenido_seg INTEGER DEFAULT 0,
+    tiempo_movimiento_seg INTEGER DEFAULT 0,
     combustible_litros DECIMAL(10, 2),
+    consumo_combustible DECIMAL(10, 2),
+    peajes DECIMAL(12, 2),
+    costo_total DECIMAL(12, 2),
     observaciones TEXT,
     
-    -- Campos estándar
+    -- Campos estandar
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     created_by UUID,
@@ -557,13 +706,18 @@ CREATE TABLE operations_viajes (
 
 CREATE INDEX idx_viajes_empresa ON operations_viajes(empresa_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_viajes_codigo ON operations_viajes(codigo);
-CREATE INDEX idx_viajes_conductor ON operations_viajes(conductor_id);
-CREATE INDEX idx_viajes_vehiculo ON operations_viajes(vehiculo_id);
 CREATE INDEX idx_viajes_estado ON operations_viajes(estado);
 CREATE INDEX idx_viajes_fecha ON operations_viajes(fecha_inicio);
 
 CREATE TRIGGER update_viajes_updated_at BEFORE UPDATE ON operations_viajes
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Foreign keys agregadas después de crear operations_viajes (resuelve dependencias circulares)
+ALTER TABLE fleet_checklists
+    ADD CONSTRAINT fk_checklists_viaje FOREIGN KEY (viaje_id) REFERENCES operations_viajes(id);
+
+ALTER TABLE operations_eta
+    ADD CONSTRAINT fk_eta_viaje FOREIGN KEY (viaje_id) REFERENCES operations_viajes(id) ON DELETE CASCADE;
 
 -- Tabla: checkpoints
 CREATE TABLE operations_checkpoints (
@@ -594,6 +748,158 @@ CREATE INDEX idx_checkpoints_parada ON operations_checkpoints(parada_id);
 CREATE INDEX idx_checkpoints_estado ON operations_checkpoints(estado);
 
 CREATE TRIGGER update_checkpoints_updated_at BEFORE UPDATE ON operations_checkpoints
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: viajes_conductores (puente viaje - conductor, soporta relevos)
+CREATE TABLE operations_viajes_conductores (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    viaje_id UUID NOT NULL REFERENCES operations_viajes(id) ON DELETE CASCADE,
+    conductor_id UUID NOT NULL REFERENCES fleet_conductores(id),
+    principal BOOLEAN DEFAULT TRUE,
+    estado VARCHAR(20) DEFAULT 'asignado' CHECK (estado IN (
+        'asignado', 'aceptado', 'en Curso', 'completado', 'rechazado', 'cancelado'
+    )),
+    fecha_asignacion TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    fecha_aceptacion TIMESTAMP WITH TIME ZONE,
+    fecha_inicio TIMESTAMP WITH TIME ZONE,
+    fecha_fin TIMESTAMP WITH TIME ZONE,
+    observaciones TEXT,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_viajes_conductores_viaje ON operations_viajes_conductores(viaje_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_viajes_conductores_conductor ON operations_viajes_conductores(conductor_id);
+CREATE INDEX idx_viajes_conductores_estado ON operations_viajes_conductores(estado);
+
+CREATE TRIGGER update_viajes_conductores_updated_at BEFORE UPDATE ON operations_viajes_conductores
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: viajes_vehiculos (puente viaje - vehiculo, soporta camion + remolque)
+CREATE TABLE operations_viajes_vehiculos (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    viaje_id UUID NOT NULL REFERENCES operations_viajes(id) ON DELETE CASCADE,
+    vehiculo_id UUID NOT NULL REFERENCES fleet_vehiculos(id),
+    tipo VARCHAR(30) DEFAULT 'principal' CHECK (tipo IN ('principal', 'remolque', 'semirremolque', 'acoplado')),
+    principal BOOLEAN DEFAULT TRUE,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_viajes_vehiculos_viaje ON operations_viajes_vehiculos(viaje_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_viajes_vehiculos_vehiculo ON operations_viajes_vehiculos(vehiculo_id);
+
+CREATE TRIGGER update_viajes_vehiculos_updated_at BEFORE UPDATE ON operations_viajes_vehiculos
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: viajes_paquetes (puente viaje - paquete, soporta cambio de viaje)
+CREATE TABLE operations_viajes_paquetes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    viaje_id UUID NOT NULL REFERENCES operations_viajes(id) ON DELETE CASCADE,
+    paquete_id UUID NOT NULL,
+    parada_id UUID REFERENCES operations_paradas(id),
+    orden_entrega INTEGER,
+    estado VARCHAR(30) DEFAULT 'asignado' CHECK (estado IN (
+        'asignado', 'cargado', 'en_transito', 'descargado', 'entregado', 'reasignado'
+    )),
+    hora_asignacion TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    hora_carga TIMESTAMP WITH TIME ZONE,
+    hora_descarga TIMESTAMP WITH TIME ZONE,
+    hora_entrega TIMESTAMP WITH TIME ZONE,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+-- Un paquete solo puede estar asignado activamente a UN viaje
+CREATE UNIQUE INDEX uq_viaje_paquete_activo
+    ON operations_viajes_paquetes(viaje_id, paquete_id)
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX idx_viajes_paquetes_viaje ON operations_viajes_paquetes(viaje_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_viajes_paquetes_paquete ON operations_viajes_paquetes(paquete_id);
+CREATE INDEX idx_viajes_paquetes_parada ON operations_viajes_paquetes(parada_id);
+CREATE INDEX idx_viajes_paquetes_estado ON operations_viajes_paquetes(estado);
+
+CREATE TRIGGER update_viajes_paquetes_updated_at BEFORE UPDATE ON operations_viajes_paquetes
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: viajes_eventos (eventos operativos del viaje)
+CREATE TABLE operations_viajes_eventos (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    viaje_id UUID NOT NULL REFERENCES operations_viajes(id) ON DELETE CASCADE,
+    tipo VARCHAR(50) NOT NULL CHECK (tipo IN (
+        'viaje_aceptado', 'checklist_completado', 'carga_iniciada', 'carga_finalizada',
+        'viaje_iniciado', 'viaje_pausado', 'viaje_reanudado', 'parada_programada',
+        'parada_no_programada', 'incidente', 'viaje_cerrado'
+    )),
+    usuario_id UUID REFERENCES core_usuarios(id),
+    descripcion TEXT,
+    metadata JSONB,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_viajes_eventos_viaje ON operations_viajes_eventos(viaje_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_viajes_eventos_tipo ON operations_viajes_eventos(tipo);
+CREATE INDEX idx_viajes_eventos_fecha ON operations_viajes_eventos(created_at DESC);
+
+CREATE TRIGGER update_viajes_eventos_updated_at BEFORE UPDATE ON operations_viajes_eventos
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: asignaciones (registro de quién asignó el viaje)
+CREATE TABLE operations_asignaciones (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
+    viaje_id UUID NOT NULL REFERENCES operations_viajes(id) ON DELETE CASCADE,
+    usuario_id UUID NOT NULL REFERENCES core_usuarios(id),
+    tipo VARCHAR(30) NOT NULL CHECK (tipo IN (
+        'viaje', 'conductor', 'vehiculo', 'paquete', 'reasignacion'
+    )),
+    referencia_tipo VARCHAR(50),
+    referencia_id UUID,
+    observacion TEXT,
+    metadata JSONB,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_asignaciones_empresa ON operations_asignaciones(empresa_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_asignaciones_viaje ON operations_asignaciones(viaje_id);
+CREATE INDEX idx_asignaciones_usuario ON operations_asignaciones(usuario_id);
+CREATE INDEX idx_asignaciones_tipo ON operations_asignaciones(tipo);
+CREATE INDEX idx_asignaciones_fecha ON operations_asignaciones(created_at DESC);
+
+CREATE TRIGGER update_asignaciones_updated_at BEFORE UPDATE ON operations_asignaciones
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
@@ -630,10 +936,85 @@ INSERT INTO shipping_estados_envio (codigo, nombre, color, orden, es_final) VALU
     ('DEVUELTO', 'Devuelto', '#F44336', 8, true),
     ('CANCELADO', 'Cancelado', '#795548', 9, true);
 
+-- Catalogo: tipos_paquete
+CREATE TABLE shipping_tipos_paquete (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID REFERENCES core_empresas(id) ON DELETE CASCADE,
+    codigo VARCHAR(50) NOT NULL,
+    nombre VARCHAR(100) NOT NULL,
+    descripcion TEXT,
+    es_sistema BOOLEAN DEFAULT FALSE,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID,
+    
+    CONSTRAINT unique_tipo_paquete_empresa UNIQUE (empresa_id, codigo)
+);
+
+CREATE INDEX idx_tipos_paquete_empresa ON shipping_tipos_paquete(empresa_id) WHERE deleted_at IS NULL;
+
+-- Tipos del sistema (empresa_id = NULL)
+INSERT INTO shipping_tipos_paquete (codigo, nombre, es_sistema) VALUES
+    ('paquete', 'Paquete', true),
+    ('sobre', 'Sobre', true),
+    ('carga', 'Carga', true),
+    ('documento', 'Documento', true),
+    ('pallet', 'Pallet', true),
+    ('contenedor', 'Contenedor', true);
+
+CREATE TRIGGER update_tipos_paquete_updated_at BEFORE UPDATE ON shipping_tipos_paquete
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: envios (movimiento fisico de mercancia)
+CREATE TABLE shipping_envios (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
+    cliente_id UUID NOT NULL REFERENCES customers_clientes(id),
+    codigo VARCHAR(50) NOT NULL,
+    referencia_cliente VARCHAR(100),
+    origen_id UUID REFERENCES customers_direcciones(id),
+    destino_id UUID REFERENCES customers_direcciones(id),
+    remitente_id UUID REFERENCES customers_remitentes(id),
+    destinatario_id UUID REFERENCES customers_destinatarios(id),
+    estado VARCHAR(30) DEFAULT 'creado' CHECK (estado IN (
+        'creado', 'preparando', 'despachado', 'en_ruta', 'entregado', 'cancelado'
+    )),
+    fecha_programada TIMESTAMP WITH TIME ZONE,
+    fecha_despacho TIMESTAMP WITH TIME ZONE,
+    fecha_entrega TIMESTAMP WITH TIME ZONE,
+    observaciones TEXT,
+    valor_total DECIMAL(12, 2),
+    costo_total DECIMAL(12, 2),
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_envios_empresa ON shipping_envios(empresa_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_envios_cliente ON shipping_envios(cliente_id);
+CREATE INDEX idx_envios_codigo ON shipping_envios(codigo);
+CREATE INDEX idx_envios_estado ON shipping_envios(estado);
+CREATE INDEX idx_envios_origen ON shipping_envios(origen_id);
+CREATE INDEX idx_envios_destino ON shipping_envios(destino_id);
+
+CREATE TRIGGER update_envios_updated_at BEFORE UPDATE ON shipping_envios
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Tabla: paquetes
 CREATE TABLE shipping_paquetes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
+    envio_id UUID REFERENCES shipping_envios(id),
     tracking_number VARCHAR(50) UNIQUE NOT NULL,
     codigo_qr TEXT,
     codigo_barras VARCHAR(100),
@@ -650,12 +1031,29 @@ CREATE TABLE shipping_paquetes (
     ancho_cm DECIMAL(10, 2),
     largo_cm DECIMAL(10, 2),
     
-    -- Información comercial
+    -- Informacion comercial
     valor_declarado DECIMAL(12, 2),
     costo_envio DECIMAL(12, 2),
-    tipo VARCHAR(50) DEFAULT 'paquete' CHECK (tipo IN ('paquete', 'sobre', 'carga', 'documento')),
+    tipo VARCHAR(50) DEFAULT 'paquete',
+    tipo_id UUID REFERENCES shipping_tipos_paquete(id),
     prioridad VARCHAR(20) DEFAULT 'normal' CHECK (prioridad IN ('baja', 'normal', 'alta', 'urgente')),
     contenido TEXT,
+    
+    -- Atributos logisticos
+    fragil BOOLEAN DEFAULT FALSE,
+    apilable BOOLEAN DEFAULT TRUE,
+    requiere_refrigeracion BOOLEAN DEFAULT FALSE,
+    temperatura_min DECIMAL(5, 2),
+    temperatura_max DECIMAL(5, 2),
+    mercancia_peligrosa BOOLEAN DEFAULT FALSE,
+    imo_class VARCHAR(20),
+    un_number VARCHAR(30),
+    numero_sello VARCHAR(50),
+    requiere_firma BOOLEAN DEFAULT TRUE,
+    requiere_otp BOOLEAN DEFAULT FALSE,
+    requiere_documento BOOLEAN DEFAULT FALSE,
+    custodia BOOLEAN DEFAULT FALSE,
+    codigo_cliente VARCHAR(100),
     
     -- Estado y fechas
     estado_actual UUID REFERENCES shipping_estados_envio(id),
@@ -663,7 +1061,7 @@ CREATE TABLE shipping_paquetes (
     fecha_entrega_estimada TIMESTAMP WITH TIME ZONE,
     fecha_entrega_real TIMESTAMP WITH TIME ZONE,
     
-    -- Campos estándar
+    -- Campos estandar
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     created_by UUID,
@@ -673,6 +1071,7 @@ CREATE TABLE shipping_paquetes (
 );
 
 CREATE INDEX idx_paquetes_empresa ON shipping_paquetes(empresa_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_paquetes_envio ON shipping_paquetes(envio_id);
 CREATE INDEX idx_paquetes_tracking ON shipping_paquetes(tracking_number);
 CREATE INDEX idx_paquetes_qr ON shipping_paquetes(codigo_qr);
 CREATE INDEX idx_paquetes_barras ON shipping_paquetes(codigo_barras);
@@ -683,6 +1082,10 @@ CREATE INDEX idx_paquetes_prioridad ON shipping_paquetes(prioridad);
 
 CREATE TRIGGER update_paquetes_updated_at BEFORE UPDATE ON shipping_paquetes
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Foreign key agregada después de crear shipping_paquetes (resuelve dependencia circular)
+ALTER TABLE operations_viajes_paquetes
+    ADD CONSTRAINT fk_viajes_paquetes_paquete FOREIGN KEY (paquete_id) REFERENCES shipping_paquetes(id) ON DELETE CASCADE;
 
 -- Tabla: cargas
 CREATE TABLE shipping_cargas (
@@ -738,6 +1141,38 @@ CREATE INDEX idx_paquetes_cargas_paquete ON shipping_paquetes_cargas(paquete_id)
 CREATE INDEX idx_paquetes_cargas_carga ON shipping_paquetes_cargas(carga_id);
 
 CREATE TRIGGER update_paquetes_cargas_updated_at BEFORE UPDATE ON shipping_paquetes_cargas
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Tabla: evidencias de carga (fotos de camion cargado, pallets, sellos, documentos)
+CREATE TABLE shipping_carga_evidencias (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
+    carga_id UUID NOT NULL REFERENCES shipping_cargas(id) ON DELETE CASCADE,
+    viaje_id UUID REFERENCES operations_viajes(id),
+    tipo VARCHAR(50) NOT NULL CHECK (tipo IN (
+        'camion_cargado', 'pallet', 'sello', 'documento', 'photo_galga', 'otra'
+    )),
+    url TEXT NOT NULL,
+    descripcion TEXT,
+    numero_sello VARCHAR(50),
+    usuario_id UUID REFERENCES core_usuarios(id),
+    fecha TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_carga_evidencias_empresa ON shipping_carga_evidencias(empresa_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_carga_evidencias_carga ON shipping_carga_evidencias(carga_id);
+CREATE INDEX idx_carga_evidencias_viaje ON shipping_carga_evidencias(viaje_id);
+CREATE INDEX idx_carga_evidencias_tipo ON shipping_carga_evidencias(tipo);
+
+CREATE TRIGGER update_carga_evidencias_updated_at BEFORE UPDATE ON shipping_carga_evidencias
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Tabla: historial_estados
@@ -1335,9 +1770,11 @@ SELECT
     veh.marca || ' ' || veh.modelo AS vehiculo_descripcion,
     r.nombre AS ruta_nombre
 FROM operations_viajes v
-LEFT JOIN fleet_conductores fc ON v.conductor_id = fc.id
+LEFT JOIN operations_viajes_conductores vjc ON v.id = vjc.viaje_id AND vjc.principal = TRUE AND vjc.deleted_at IS NULL
+LEFT JOIN fleet_conductores fc ON vjc.conductor_id = fc.id
 LEFT JOIN core_usuarios cond ON fc.usuario_id = cond.id
-LEFT JOIN fleet_vehiculos veh ON v.vehiculo_id = veh.id
+LEFT JOIN operations_viajes_vehiculos vjv ON v.id = vjv.viaje_id AND vjv.principal = TRUE AND vjv.deleted_at IS NULL
+LEFT JOIN fleet_vehiculos veh ON vjv.vehiculo_id = veh.id
 LEFT JOIN operations_rutas r ON v.ruta_id = r.id
 WHERE v.deleted_at IS NULL
     AND v.estado IN ('programado', 'en_curso');
@@ -1829,6 +2266,22 @@ CREATE TRIGGER trg_auditoria_entregas
     AFTER INSERT OR UPDATE OR DELETE ON delivery_entregas
     FOR EACH ROW EXECUTE FUNCTION fn_auditoria_general();
 
+CREATE TRIGGER trg_auditoria_envios
+    AFTER INSERT OR UPDATE OR DELETE ON shipping_envios
+    FOR EACH ROW EXECUTE FUNCTION fn_auditoria_general();
+
+CREATE TRIGGER trg_auditoria_viajes_paquetes
+    AFTER INSERT OR UPDATE OR DELETE ON operations_viajes_paquetes
+    FOR EACH ROW EXECUTE FUNCTION fn_auditoria_general();
+
+CREATE TRIGGER trg_auditoria_asignaciones
+    AFTER INSERT OR UPDATE OR DELETE ON operations_asignaciones
+    FOR EACH ROW EXECUTE FUNCTION fn_auditoria_general();
+
+CREATE TRIGGER trg_auditoria_tipos_paquete
+    AFTER INSERT OR UPDATE OR DELETE ON shipping_tipos_paquete
+    FOR EACH ROW EXECUTE FUNCTION fn_auditoria_general();
+
 
 -- ============================================================================
 -- 5. POLÍTICAS RLS COMPLETAS PARA TODAS LAS TABLAS PRINCIPALES
@@ -1993,6 +2446,95 @@ CREATE POLICY "Mis notificaciones" ON communication_notificaciones
 CREATE POLICY "Documentos de la empresa" ON storage_documentos
     FOR ALL USING (empresa_id = public.user_empresa_id());
 
+-- Envios: empresa del usuario
+ALTER TABLE shipping_envios ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Envios de la empresa" ON shipping_envios
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Viajes-Conductores: empresa del usuario (a traves de viaje)
+ALTER TABLE operations_viajes_conductores ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Viajes-Conductores de la empresa" ON operations_viajes_conductores
+    FOR ALL USING (
+        viaje_id IN (
+            SELECT id FROM operations_viajes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Viajes-Vehiculos: empresa del usuario (a traves de viaje)
+ALTER TABLE operations_viajes_vehiculos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Viajes-Vehiculos de la empresa" ON operations_viajes_vehiculos
+    FOR ALL USING (
+        viaje_id IN (
+            SELECT id FROM operations_viajes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Viajes-Paquetes: empresa del usuario (a traves de viaje)
+ALTER TABLE operations_viajes_paquetes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Viajes-Paquetes de la empresa" ON operations_viajes_paquetes
+    FOR ALL USING (
+        viaje_id IN (
+            SELECT id FROM operations_viajes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Viajes-Eventos: empresa del usuario (a traves de viaje)
+ALTER TABLE operations_viajes_eventos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Viajes-Eventos de la empresa" ON operations_viajes_eventos
+    FOR ALL USING (
+        viaje_id IN (
+            SELECT id FROM operations_viajes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Checklists: empresa del usuario
+ALTER TABLE fleet_checklists ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Checklists de la empresa" ON fleet_checklists
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Checklists Items: empresa del usuario (a traves de checklist)
+ALTER TABLE fleet_checklists_items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Checklists Items de la empresa" ON fleet_checklists_items
+    FOR ALL USING (
+        checklist_id IN (
+            SELECT id FROM fleet_checklists WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Asignaciones: empresa del usuario
+ALTER TABLE operations_asignaciones ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Asignaciones de la empresa" ON operations_asignaciones
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Tipos de paquete: empresa del usuario (catalogo)
+ALTER TABLE shipping_tipos_paquete ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Tipos paquete de la empresa" ON shipping_tipos_paquete
+    FOR ALL USING (empresa_id = public.user_empresa_id() OR empresa_id IS NULL);
+
+-- Rutas optimizadas: empresa del usuario
+ALTER TABLE operations_rutas_optimizadas ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Rutas optimizadas de la empresa" ON operations_rutas_optimizadas
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- ETA: empresa del usuario (a traves de viaje)
+ALTER TABLE operations_eta ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "ETA de la empresa" ON operations_eta
+    FOR ALL USING (
+        viaje_id IN (
+            SELECT id FROM operations_viajes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Carga evidencias: empresa del usuario
+ALTER TABLE shipping_carga_evidencias ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Carga evidencias de la empresa" ON shipping_carga_evidencias
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Geocercas vinculos: empresa del usuario
+ALTER TABLE operations_geocercas_vinculos ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Geocercas vinculos de la empresa" ON operations_geocercas_vinculos
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
 
 -- ============================================================================
 -- 6. CONSTRAINT LÓGICA PARA GEOCERCAS (circulo vs poligono)
@@ -2119,6 +2661,11 @@ CREATE UNIQUE INDEX uq_cargas_empresa_codigo_activa
     ON shipping_cargas(empresa_id, codigo)
     WHERE deleted_at IS NULL;
 
+-- shipping_envios: código único por empresa (solo activos)
+CREATE UNIQUE INDEX uq_envios_empresa_codigo_activo
+    ON shipping_envios(empresa_id, codigo)
+    WHERE deleted_at IS NULL;
+
 -- fleet_dispositivos_gps: IMEI único global (nunca se reutiliza)
 -- Se mantiene UNIQUE global porque un IMEI no debería existir en dos empresas
 
@@ -2162,9 +2709,11 @@ SELECT
     veh.marca || ' ' || veh.modelo AS vehiculo_descripcion,
     r.nombre AS ruta_nombre
 FROM operations_viajes v
-LEFT JOIN fleet_conductores fc ON v.conductor_id = fc.id
+LEFT JOIN operations_viajes_conductores vjc ON v.id = vjc.viaje_id AND vjc.principal = TRUE AND vjc.deleted_at IS NULL
+LEFT JOIN fleet_conductores fc ON vjc.conductor_id = fc.id
 LEFT JOIN core_usuarios cond ON fc.usuario_id = cond.id
-LEFT JOIN fleet_vehiculos veh ON v.vehiculo_id = veh.id
+LEFT JOIN operations_viajes_vehiculos vjv ON v.id = vjv.viaje_id AND vjv.principal = TRUE AND vjv.deleted_at IS NULL
+LEFT JOIN fleet_vehiculos veh ON vjv.vehiculo_id = veh.id
 LEFT JOIN operations_rutas r ON v.ruta_id = r.id
 WHERE v.deleted_at IS NULL
     AND v.estado IN ('programado', 'en_curso');
@@ -2211,6 +2760,8 @@ BEGIN
             SELECT EXISTS(SELECT 1 FROM operations_viajes WHERE empresa_id = p_empresa_id AND codigo = v_codigo AND deleted_at IS NULL) INTO v_existe;
         ELSIF p_tabla = 'shipping_cargas' THEN
             SELECT EXISTS(SELECT 1 FROM shipping_cargas WHERE empresa_id = p_empresa_id AND codigo = v_codigo AND deleted_at IS NULL) INTO v_existe;
+        ELSIF p_tabla = 'shipping_envios' THEN
+            SELECT EXISTS(SELECT 1 FROM shipping_envios WHERE empresa_id = p_empresa_id AND codigo = v_codigo AND deleted_at IS NULL) INTO v_existe;
         ELSE
             v_existe := FALSE;
         END IF;
