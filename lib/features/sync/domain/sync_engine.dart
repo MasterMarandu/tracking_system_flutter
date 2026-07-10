@@ -14,12 +14,7 @@ import 'package:tracking_system_app/features/sync/data/sync_queue.dart';
 // SYNC ENGINE — Orchestrates offline-first data synchronization
 // ============================================================================
 
-enum SyncStatus {
-  idle,
-  syncing,
-  error,
-  offline,
-}
+enum SyncStatus { idle, syncing, error, offline }
 
 class SyncState {
   final SyncStatus status;
@@ -61,20 +56,9 @@ class SyncEngine extends Notifier<SyncState> {
   StreamSubscription? _connectivitySubscription;
   Timer? _periodicSyncTimer;
   bool _isProcessing = false;
-  bool _initialized = false;
 
   LocalCache? _cache;
   SyncQueue? _queue;
-
-  Future<LocalCache> get cache async {
-    _cache ??= await LocalCache.create();
-    return _cache!;
-  }
-
-  Future<SyncQueue> get queue async {
-    _queue ??= await SyncQueue.create();
-    return _queue!;
-  }
 
   @override
   SyncState build() {
@@ -83,38 +67,31 @@ class SyncEngine extends Notifier<SyncState> {
   }
 
   Future<void> _initialize() async {
-    try {
-      // Ensure cache/queue are created
-      _cache = await LocalCache.create();
-      _queue = await SyncQueue.create();
-      _initialized = true;
+    _cache = await LocalCache.create();
+    _queue = await SyncQueue.create();
 
-      // Listen to connectivity changes
-      _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
-        _onConnectivityChanged,
-      );
+    // Listen to connectivity changes
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen(
+      _onConnectivityChanged,
+    );
 
-      // Check initial connectivity
-      final results = await Connectivity().checkConnectivity();
-      final isOnline = results.any((r) => r != ConnectivityResult.none);
+    // Check initial connectivity
+    final results = await Connectivity().checkConnectivity();
+    final isOnline = results.any((r) => r != ConnectivityResult.none);
 
-      if (!isOnline) {
-        state = state.copyWith(status: SyncStatus.offline);
-      }
+    if (!isOnline) {
+      state = state.copyWith(status: SyncStatus.offline);
+    }
 
-      // Start periodic sync (every 5 minutes)
-      _periodicSyncTimer = Timer.periodic(
-        const Duration(minutes: 5),
-        (_) => syncNow(),
-      );
+    // Start periodic sync (every 5 minutes)
+    _periodicSyncTimer = Timer.periodic(
+      const Duration(minutes: 5),
+      (_) => syncNow(),
+    );
 
-      // Initial sync attempt
-      if (isOnline) {
-        syncNow();
-      }
-    } catch (e) {
-      _logger.e('SyncEngine init failed: $e');
-      _initialized = true; // Allow loadBootstrap to work without cache
+    // Initial sync attempt
+    if (isOnline) {
+      syncNow();
     }
   }
 
@@ -135,18 +112,17 @@ class SyncEngine extends Notifier<SyncState> {
 
   /// Load bootstrap: try network first, fall back to cache
   Future<DriverBootstrap?> loadBootstrap({bool forceRefresh = false}) async {
-    final cache = await this.cache;
     final isOnline = await _checkOnline();
 
     if (!isOnline) {
       _logger.i('Offline: loading from cache');
       state = state.copyWith(status: SyncStatus.offline);
-      return await cache.loadBootstrap();
+      return await _cache?.loadBootstrap();
     }
 
-    if (!forceRefresh && !await cache.isCacheStale()) {
+    if (!forceRefresh && _cache != null && !await _cache!.isCacheStale()) {
       _logger.i('Cache fresh: loading from cache');
-      return await cache.loadBootstrap();
+      return await _cache?.loadBootstrap();
     }
 
     // Try network
@@ -155,8 +131,8 @@ class SyncEngine extends Notifier<SyncState> {
       final bootstrap = await DriverBootstrapService.instance.fetchBootstrap();
 
       // Cache the result
-      await cache.saveBootstrap(bootstrap);
-      await cache.updateSyncMetadata(
+      await _cache?.saveBootstrap(bootstrap);
+      await _cache?.updateSyncMetadata(
         lastSyncAttempt: DateTime.now(),
         lastSyncSuccess: DateTime.now(),
         syncFailureCount: 0,
@@ -173,12 +149,13 @@ class SyncEngine extends Notifier<SyncState> {
     } catch (e) {
       _logger.e('Network fetch failed: $e');
 
-      await cache.updateSyncMetadata(
+      await _cache?.updateSyncMetadata(
         lastSyncAttempt: DateTime.now(),
+        syncFailureCount: (state.pendingOperations) + 1,
       );
 
       // Fall back to cache
-      final cached = await cache.loadBootstrap();
+      final cached = await _cache?.loadBootstrap();
 
       state = state.copyWith(
         status: cached != null ? SyncStatus.idle : SyncStatus.error,
@@ -195,9 +172,9 @@ class SyncEngine extends Notifier<SyncState> {
     SyncOperationType type,
     Map<String, dynamic> payload,
   ) async {
-    final q = await queue;
+    if (_queue == null) return;
 
-    await q.enqueue(type, payload);
+    await _queue!.enqueue(type, payload);
     await _updatePendingCount();
 
     _logger.i('Enqueued operation: ${type.name}');
@@ -210,14 +187,13 @@ class SyncEngine extends Notifier<SyncState> {
 
   /// Process pending operations in the queue
   Future<void> syncNow() async {
-    if (_isProcessing) return;
+    if (_isProcessing || _queue == null) return;
     _isProcessing = true;
 
     try {
       state = state.copyWith(status: SyncStatus.syncing);
-      final q = await queue;
 
-      final operations = await q.getPendingOperations();
+      final operations = await _queue!.getPendingOperations();
       final readyOperations = operations.where((o) => o.isReady).toList();
 
       if (readyOperations.isEmpty) {
@@ -231,8 +207,7 @@ class SyncEngine extends Notifier<SyncState> {
         await _processOperation(operation);
       }
 
-      final cacheInstance = await cache;
-      await cacheInstance.updateSyncMetadata(
+      await _cache?.updateSyncMetadata(
         lastSyncAttempt: DateTime.now(),
         lastSyncSuccess: DateTime.now(),
       );
@@ -245,10 +220,7 @@ class SyncEngine extends Notifier<SyncState> {
       );
     } catch (e) {
       _logger.e('Sync failed: $e');
-      state = state.copyWith(
-        status: SyncStatus.error,
-        error: e.toString(),
-      );
+      state = state.copyWith(status: SyncStatus.error, error: e.toString());
     } finally {
       _isProcessing = false;
       await _updatePendingCount();
@@ -268,19 +240,17 @@ class SyncEngine extends Notifier<SyncState> {
 
   /// Clear all local data (logout)
   Future<void> clearAll() async {
-    final cacheInstance = await cache;
-    await cacheInstance.clearBootstrap();
-    final q = await queue;
-    await q.clearAll();
+    await _cache?.clearBootstrap();
+    await _queue?.clearAll();
     state = const SyncState();
   }
 
   // ─── Private ───────────────────────────────────────
 
   Future<void> _processOperation(SyncOperation operation) async {
-    final q = await queue;
+    if (_queue == null) return;
 
-    await q.markProcessing(operation.id);
+    await _queue!.markProcessing(operation.id);
 
     try {
       switch (operation.type) {
@@ -300,25 +270,28 @@ class SyncEngine extends Notifier<SyncState> {
           await _syncUpdateTripStatus(operation.payload);
       }
 
-      await q.markCompleted(operation.id);
+      await _queue!.markCompleted(operation.id);
       _logger.i('Completed operation: ${operation.type.name}');
     } catch (e) {
       _logger.e('Failed operation ${operation.type.name}: $e');
-      await q.markFailed(operation.id, e.toString());
+      await _queue!.markFailed(operation.id, e.toString());
     }
   }
 
   // ─── Sync Implementations ──────────────────────────
 
   Future<void> _syncCompleteDelivery(Map<String, dynamic> payload) async {
-    await SupabaseConfig.client.rpc('complete_delivery', params: {
-      'p_checkpoint_id': payload['checkpointId'],
-      'p_trip_id': payload['tripId'],
-      'p_stop_id': payload['stopId'],
-      'p_outcome': payload['outcome'],
-      'p_incident_reason': payload['incidentReason'],
-      'p_packages_delivered': payload['packagesDelivered'],
-    });
+    await SupabaseConfig.client.rpc(
+      'complete_delivery',
+      params: {
+        'p_checkpoint_id': payload['checkpointId'],
+        'p_trip_id': payload['tripId'],
+        'p_stop_id': payload['stopId'],
+        'p_outcome': payload['outcome'],
+        'p_incident_reason': payload['incidentReason'],
+        'p_packages_delivered': payload['packagesDelivered'],
+      },
+    );
   }
 
   Future<void> _syncUpdateChecklist(Map<String, dynamic> payload) async {
@@ -332,10 +305,13 @@ class SyncEngine extends Notifier<SyncState> {
   }
 
   Future<void> _syncVerifyOtp(Map<String, dynamic> payload) async {
-    await SupabaseConfig.client.rpc('verify_delivery_otp', params: {
-      'p_checkpoint_id': payload['checkpointId'],
-      'p_otp_code': payload['otpCode'],
-    });
+    await SupabaseConfig.client.rpc(
+      'verify_delivery_otp',
+      params: {
+        'p_checkpoint_id': payload['checkpointId'],
+        'p_otp_code': payload['otpCode'],
+      },
+    );
   }
 
   Future<void> _syncSubmitPhoto(Map<String, dynamic> payload) async {
@@ -344,7 +320,8 @@ class SyncEngine extends Notifier<SyncState> {
     final checkpointId = payload['checkpointId'] as String;
 
     final bytes = await File(filePath).readAsBytes();
-    final fileName = 'delivery_${checkpointId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final fileName =
+        'delivery_${checkpointId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
     await SupabaseConfig.client.storage
         .from('delivery-photos')
@@ -389,15 +366,16 @@ class SyncEngine extends Notifier<SyncState> {
   }
 
   Future<void> _updatePendingCount() async {
-    final q = await queue;
-    final count = await q.pendingCount;
+    if (_queue == null) return;
+    final count = await _queue!.pendingCount;
     state = state.copyWith(pendingOperations: count);
   }
 
   @override
-  void close() {
+  void dispose() {
     _connectivitySubscription?.cancel();
     _periodicSyncTimer?.cancel();
+    //super.dispose();
   }
 }
 

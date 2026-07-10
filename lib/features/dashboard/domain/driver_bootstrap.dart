@@ -107,6 +107,8 @@ class DriverBootstrap {
 class BootstrapUser {
   final String id;
   final String name;
+  final String? email;
+  final String? phone;
   final String role;
   final String companyId;
   final bool active;
@@ -114,6 +116,8 @@ class BootstrapUser {
   const BootstrapUser({
     required this.id,
     required this.name,
+    this.email,
+    this.phone,
     required this.role,
     required this.companyId,
     required this.active,
@@ -121,10 +125,12 @@ class BootstrapUser {
 
   factory BootstrapUser.fromJson(Map<String, dynamic> json) {
     return BootstrapUser(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      role: json['role'] as String,
-      companyId: json['companyId'] as String,
+      id: (json['id'] ?? json['auth_user_id']) as String,
+      name: (json['name'] ?? '') as String,
+      email: json['email'] as String?,
+      phone: json['telefono'] as String?,
+      role: json['rol'] as String? ?? 'Chofer',
+      companyId: (json['companyId'] ?? json['empresa_id'] ?? '') as String,
       active: json['active'] as bool? ?? true,
     );
   }
@@ -134,20 +140,26 @@ class BootstrapDriver {
   final String id;
   final String status;
   final String license;
+  final String? phone;
+  final String? photoUrl;
   final String? vehicleId;
 
   const BootstrapDriver({
     required this.id,
     required this.status,
     required this.license,
+    this.phone,
+    this.photoUrl,
     this.vehicleId,
   });
 
   factory BootstrapDriver.fromJson(Map<String, dynamic> json) {
     return BootstrapDriver(
       id: json['id'] as String,
-      status: json['status'] as String,
-      license: json['license'] as String,
+      status: (json['status'] ?? json['estado'] ?? 'desconocido') as String,
+      license: (json['license'] ?? json['licencia'] ?? '') as String,
+      phone: (json['telefono']) as String?,
+      photoUrl: json['foto'] as String?,
       vehicleId: json['vehicleId'] as String?,
     );
   }
@@ -158,20 +170,23 @@ class BootstrapVehicle {
   final String plate;
   final String brand;
   final String model;
+  final int? year;
 
   const BootstrapVehicle({
     required this.id,
     required this.plate,
     required this.brand,
     required this.model,
+    this.year,
   });
 
   factory BootstrapVehicle.fromJson(Map<String, dynamic> json) {
     return BootstrapVehicle(
       id: json['id'] as String,
-      plate: json['plate'] as String,
-      brand: json['brand'] as String,
-      model: json['model'] as String,
+      plate: (json['plate'] ?? json['matricula'] ?? '') as String,
+      brand: (json['brand'] ?? json['marca'] ?? '') as String,
+      model: (json['model'] ?? json['modelo'] ?? '') as String,
+      year: json['anio'] as int?,
     );
   }
 }
@@ -206,22 +221,31 @@ class BootstrapTrip {
   factory BootstrapTrip.fromJson(Map<String, dynamic> json) {
     return BootstrapTrip(
       id: json['id'] as String,
-      code: json['code'] as String,
-      status: json['status'] as String,
-      departureTime: json['departureTime'] as String?,
-      estimatedArrival: json['estimatedArrival'] as String?,
-      totalDistance: (json['totalDistance'] as num?)?.toDouble(),
-      remainingDistance: (json['remainingDistance'] as num?)?.toDouble(),
-      stopsProgress: json['stopsProgress'] as int?,
-      totalStops: json['totalStops'] as int?,
-      packagesRemaining: json['packagesRemaining'] as int?,
-      progressPercent: (json['progressPercent'] as num?)?.toDouble(),
+      code: (json['code'] ?? json['codigo'] ?? '') as String,
+      status: (json['status'] ?? json['estado'] ?? 'desconocido') as String,
+      departureTime: (json['departureTime'] ?? json['departure_time'])
+          as String?,
+      estimatedArrival: (json['estimatedArrival'] ?? json['estimated_arrival'])
+          as String?,
+      totalDistance: (json['totalDistance'] ?? json['total_distance'] as num?)
+          ?.toDouble(),
+      remainingDistance:
+          (json['remainingDistance'] ?? json['remaining_distance'] as num?)
+              ?.toDouble(),
+      stopsProgress: (json['stopsProgress'] ?? json['stops_progress']) as int?,
+      totalStops: (json['totalStops'] ?? json['total_stops']) as int?,
+      packagesRemaining:
+          (json['packagesRemaining'] ?? json['packages_remaining']) as int?,
+      progressPercent:
+          (json['progressPercent'] ?? json['progress_percent'] as num?)
+              ?.toDouble(),
     );
   }
 }
 
 class BootstrapChecklist {
   final String id;
+  final String type;
   final String status;
   final int completed;
   final int total;
@@ -229,6 +253,7 @@ class BootstrapChecklist {
 
   const BootstrapChecklist({
     required this.id,
+    required this.type,
     required this.status,
     required this.completed,
     required this.total,
@@ -236,17 +261,22 @@ class BootstrapChecklist {
   });
 
   factory BootstrapChecklist.fromJson(Map<String, dynamic> json) {
+    final itemsJson = json['items'] as List? ?? const [];
+    final completedCount = itemsJson.where((i) {
+      final m = i as Map<String, dynamic>;
+      return (m['status'] ?? m['estado']) == 'ok';
+    }).length;
+
     return BootstrapChecklist(
       id: json['id'] as String,
-      status: json['status'] as String,
-      completed: json['completed'] as int,
-      total: json['total'] as int,
-      items: json['items'] != null
-          ? (json['items'] as List)
-              .map((i) => BootstrapChecklistItem.fromJson(
-                  i as Map<String, dynamic>))
-              .toList()
-          : [],
+      type: (json['type'] ?? json['tipo'] ?? '') as String,
+      status: (json['status'] ?? json['estado'] ?? 'pendiente') as String,
+      completed: json['completed'] as int? ?? completedCount,
+      total: json['total'] as int? ?? itemsJson.length,
+      items: itemsJson
+          .map((i) =>
+              BootstrapChecklistItem.fromJson(i as Map<String, dynamic>))
+          .toList(),
     );
   }
 }
@@ -256,30 +286,36 @@ class BootstrapChecklistItem {
   final String name;
   final String category;
   final String status;
+  final String? observation;
 
   const BootstrapChecklistItem({
     required this.id,
     required this.name,
     required this.category,
     required this.status,
+    this.observation,
   });
 
   factory BootstrapChecklistItem.fromJson(Map<String, dynamic> json) {
     return BootstrapChecklistItem(
       id: json['id'] as String,
-      name: json['name'] as String,
-      category: json['category'] as String,
-      status: json['status'] as String,
+      name: (json['name'] ?? json['nombre'] ?? '') as String,
+      category: (json['category'] ?? json['categoria'] ?? '') as String,
+      status: (json['status'] ?? json['estado'] ?? 'pendiente') as String,
+      observation: (json['observation'] ?? json['observacion']) as String?,
     );
   }
 }
 
 class BootstrapCurrentStop {
   final String id;
+  final String? checkpointId;
   final String name;
   final String address;
   final String? customerName;
-  final String status;
+  final String? status;
+  final double? lat;
+  final double? lng;
   final int? etaMinutes;
   final double? distanceKm;
   final int? packages;
@@ -287,10 +323,13 @@ class BootstrapCurrentStop {
 
   const BootstrapCurrentStop({
     required this.id,
+    this.checkpointId,
     required this.name,
     required this.address,
     this.customerName,
-    required this.status,
+    this.status,
+    this.lat,
+    this.lng,
     this.etaMinutes,
     this.distanceKm,
     this.packages,
@@ -300,14 +339,18 @@ class BootstrapCurrentStop {
   factory BootstrapCurrentStop.fromJson(Map<String, dynamic> json) {
     return BootstrapCurrentStop(
       id: json['id'] as String,
-      name: json['name'] as String,
-      address: json['address'] as String,
-      customerName: json['customerName'] as String?,
-      status: json['status'] as String,
-      etaMinutes: json['etaMinutes'] as int?,
-      distanceKm: (json['distanceKm'] as num?)?.toDouble(),
-      packages: json['packages'] as int?,
-      order: json['order'] as int?,
+      checkpointId: (json['checkpoint_id'] ?? json['checkpointId']) as String?,
+      name: (json['name'] ?? json['nombre'] ?? '') as String,
+      address: (json['address'] ?? json['direccion'] ?? '') as String,
+      customerName: (json['customer_name'] ?? json['customerName']) as String?,
+      status: (json['status'] ?? json['estado']) as String?,
+      lat: (json['latitud'] ?? json['lat'] as num?)?.toDouble(),
+      lng: (json['longitud'] ?? json['lng'] as num?)?.toDouble(),
+      etaMinutes: (json['eta_minutes'] ?? json['etaMinutes']) as int?,
+      distanceKm:
+          (json['distance_km'] ?? json['distanceKm'] as num?)?.toDouble(),
+      packages: (json['packages'] as num?)?.toInt(),
+      order: (json['orden'] ?? json['order'] as num?)?.toInt(),
     );
   }
 }

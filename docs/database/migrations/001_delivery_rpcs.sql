@@ -4,6 +4,70 @@
 -- ============================================================================
 
 -- ============================================================================
+-- 0. Add missing columns FIRST (before functions that use them)
+-- ============================================================================
+
+-- Add columns to operations_checkpoints
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'operations_checkpoints' AND column_name = 'metadata'
+    ) THEN
+        ALTER TABLE operations_checkpoints ADD COLUMN metadata JSONB;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'operations_checkpoints' AND column_name = 'foto_evidencia_url'
+    ) THEN
+        ALTER TABLE operations_checkpoints ADD COLUMN foto_evidencia_url TEXT;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'operations_checkpoints' AND column_name = 'firma_receptor'
+    ) THEN
+        ALTER TABLE operations_checkpoints ADD COLUMN firma_receptor TEXT;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'operations_checkpoints' AND column_name = 'otp_expires_at'
+    ) THEN
+        ALTER TABLE operations_checkpoints ADD COLUMN otp_expires_at TIMESTAMPTZ;
+    END IF;
+END $$;
+
+-- Update事件 tipo constraint to allow new event types
+DO $$
+DECLARE
+    v_constraint_name TEXT;
+BEGIN
+    SELECT conname INTO v_constraint_name
+    FROM pg_constraint
+    WHERE conrelid = 'operations_viajes_eventos'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%tipo%';
+
+    IF v_constraint_name IS NOT NULL THEN
+        EXECUTE format(
+            'ALTER TABLE operations_viajes_eventos DROP CONSTRAINT %I',
+            v_constraint_name
+        );
+    END IF;
+
+    ALTER TABLE operations_viajes_eventos
+    ADD CONSTRAINT operations_viajes_eventos_tipo_check
+    CHECK (tipo IN (
+        'viaje_aceptado', 'checklist_completado', 'carga_iniciada', 'carga_finalizada',
+        'viaje_iniciado', 'viaje_pausado', 'viaje_reanudado', 'parada_programada',
+        'parada_no_programada', 'incidente', 'entrega', 'otp_verificado',
+        'firma_capturada', 'foto_capturada', 'viaje_cerrado'
+    ));
+END $$;
+
+-- ============================================================================
 -- 1. complete_delivery
 -- Called by SyncEngine to mark a delivery as completed
 -- ============================================================================
@@ -18,15 +82,33 @@ CREATE OR REPLACE FUNCTION public.complete_delivery(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_checkpoint operations_checkpoints%ROWTYPE;
     v_trip operations_viajes%ROWTYPE;
-    v_new_stops_progress INTEGER;
     v_total_stops INTEGER;
+    v_completed_stops INTEGER;
     v_trip_completed BOOLEAN := FALSE;
+    v_estado_entregado_id UUID;
+    v_empresa_id UUID;
     v_result JSONB;
 BEGIN
+    -- 0. Multi-tenant security: verify user belongs to this trip's empresa
+    SELECT v.empresa_id INTO v_empresa_id
+    FROM operations_viajes v
+    WHERE v.id = p_trip_id AND v.deleted_at IS NULL;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM core_usuarios u
+        WHERE u.auth_user_id = auth.uid()
+          AND u.empresa_id = v_empresa_id
+          AND u.deleted_at IS NULL
+          AND u.activo = TRUE
+    ) THEN
+        RAISE EXCEPTION 'Access denied: user does not belong to this empresa';
+    END IF;
+
     -- 1. Get and validate checkpoint
     SELECT * INTO v_checkpoint
     FROM operations_checkpoints
@@ -42,8 +124,7 @@ BEGIN
     UPDATE operations_checkpoints
     SET
         estado = CASE
-            WHEN p_outcome = 'complete' THEN 'completado'
-            WHEN p_outcome = 'incident' THEN 'completado'
+            WHEN p_outcome IN ('complete', 'incident') THEN 'completado'
             ELSE estado
         END,
         hora_salida = NOW(),
@@ -54,43 +135,44 @@ BEGIN
         updated_at = NOW()
     WHERE id = p_checkpoint_id;
 
-    -- 3. Get trip info
-    SELECT * INTO v_trip
-    FROM operations_viajes
-    WHERE id = p_trip_id AND deleted_at IS NULL;
+    -- 3. Calculate progress from checkpoints (not from viajes columns)
+    SELECT COUNT(*)::INTEGER INTO v_total_stops
+    FROM operations_checkpoints
+    WHERE viaje_id = p_trip_id AND deleted_at IS NULL;
 
-    IF v_trip IS NULL THEN
-        RAISE EXCEPTION 'Trip not found: %', p_trip_id;
-    END IF;
+    SELECT COUNT(*)::INTEGER INTO v_completed_stops
+    FROM operations_checkpoints
+    WHERE viaje_id = p_trip_id
+      AND estado = 'completado'
+      AND deleted_at IS NULL;
 
-    v_total_stops := COALESCE(v_trip.total_stops, 0);
-    v_new_stops_progress := COALESCE(v_trip.stops_progress, 0) + 1;
+    -- 4. Update trip: mark completed if all checkpoints done
+    v_trip_completed := (v_completed_stops >= v_total_stops AND v_total_stops > 0);
 
-    -- 4. Update trip progress
     UPDATE operations_viajes
     SET
-        stops_progress = v_new_stops_progress,
         updated_at = NOW(),
         estado = CASE
-            WHEN v_new_stops_progress >= v_total_stops AND v_total_stops > 0
-                THEN 'completado'
+            WHEN v_trip_completed THEN 'completado'
             ELSE estado
         END,
         fecha_fin = CASE
-            WHEN v_new_stops_progress >= v_total_stops AND v_total_stops > 0
-                THEN NOW()
+            WHEN v_trip_completed THEN NOW()
             ELSE fecha_fin
         END
     WHERE id = p_trip_id;
 
-    v_trip_completed := (v_new_stops_progress >= v_total_stops AND v_total_stops > 0);
-
     -- 5. If complete delivery (not incident), update package statuses
     IF p_outcome = 'complete' THEN
+        -- Get the UUID for 'ENTREGADO' status
+        SELECT id INTO v_estado_entregado_id
+        FROM shipping_estados_envio
+        WHERE codigo = 'ENTREGADO';
+
         UPDATE shipping_paquetes
         SET
-            estado = 'entregado',
-            fecha_entrega = NOW(),
+            estado_actual = v_estado_entregado_id,
+            fecha_entrega_real = NOW(),
             updated_at = NOW()
         WHERE id IN (
             SELECT paquete_id
@@ -126,7 +208,7 @@ BEGIN
         'success', TRUE,
         'checkpoint_id', p_checkpoint_id,
         'trip_completed', v_trip_completed,
-        'stops_progress', v_new_stops_progress,
+        'stops_progress', v_completed_stops,
         'total_stops', v_total_stops,
         'packages_delivered', p_packages_delivered
     );
@@ -146,13 +228,40 @@ CREATE OR REPLACE FUNCTION public.verify_delivery_otp(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_checkpoint operations_checkpoints%ROWTYPE;
     v_stored_otp TEXT;
     v_otp_expires_at TIMESTAMPTZ;
     v_is_valid BOOLEAN;
+    v_empresa_id UUID;
 BEGIN
+    -- 0. Multi-tenant security
+    SELECT oc.empresa_id INTO v_empresa_id
+    FROM operations_checkpoints oc
+    WHERE oc.id = p_checkpoint_id;
+
+    -- empresa_id may be NULL on checkpoints, get from trip
+    IF v_empresa_id IS NULL THEN
+        SELECT v.empresa_id INTO v_empresa_id
+        FROM operations_viajes v
+        JOIN operations_checkpoints oc ON oc.viaje_id = v.id
+        WHERE oc.id = p_checkpoint_id;
+    END IF;
+
+    IF v_empresa_id IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM core_usuarios u
+            WHERE u.auth_user_id = auth.uid()
+              AND u.empresa_id = v_empresa_id
+              AND u.deleted_at IS NULL
+              AND u.activo = TRUE
+        ) THEN
+            RAISE EXCEPTION 'Access denied';
+        END IF;
+    END IF;
+
     -- 1. Get checkpoint
     SELECT * INTO v_checkpoint
     FROM operations_checkpoints
@@ -165,19 +274,9 @@ BEGIN
         );
     END IF;
 
-    -- 2. Check for OTP in observaciones (stored as JSON)
-    -- Format in observaciones: {"otp_code": "123456", "otp_expires_at": "2026-07-10T..."}
-    BEGIN
-        v_stored_otp := (v_checkpoint.observaciones::jsonb)->>'otp_code';
-        v_otp_expires_at := ((v_checkpoint.observaciones::jsonb)->>'otp_expires_at')::timestamptz;
-    EXCEPTION WHEN OTHERS THEN
-        -- Fallback: look for a dedicated OTP column or table
-        -- For now, return error if we can't parse
-        RETURN jsonb_build_object(
-            'success', FALSE,
-            'error', 'OTP not configured for this checkpoint'
-        );
-    END;
+    -- 2. Get OTP from metadata (not observaciones)
+    v_stored_otp := v_checkpoint.metadata->>'otp_code';
+    v_otp_expires_at := v_checkpoint.otp_expires_at;
 
     -- 3. Validate OTP exists
     IF v_stored_otp IS NULL THEN
@@ -202,8 +301,7 @@ BEGIN
     IF NOT v_is_valid THEN
         RETURN jsonb_build_object(
             'success', FALSE,
-            'error', 'Invalid OTP code',
-            'attempts_remaining', 3  -- placeholder, implement actual tracking if needed
+            'error', 'Invalid OTP code'
         );
     END IF;
 
@@ -219,7 +317,7 @@ BEGIN
         viaje_id, tipo, descripcion, metadata
     ) VALUES (
         v_checkpoint.viaje_id,
-        'entrega',
+        'otp_verificado',
         'OTP verificado exitosamente',
         jsonb_build_object(
             'checkpoint_id', p_checkpoint_id,
@@ -243,6 +341,7 @@ CREATE OR REPLACE FUNCTION public.get_driver_bootstrap()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 STABLE
 AS $$
 DECLARE
@@ -255,8 +354,11 @@ DECLARE
     v_checklist JSONB;
     v_current_stop JSONB;
     v_stops JSONB;
-    v_delivery_session JSONB;
     v_result JSONB;
+    v_driver_id UUID;
+    v_trip_id UUID;
+    v_total_stops INTEGER;
+    v_completed_stops INTEGER;
 BEGIN
     -- 1. Get authenticated user
     v_user_id := auth.uid();
@@ -265,15 +367,14 @@ BEGIN
         RAISE EXCEPTION 'Not authenticated';
     END IF;
 
-    -- 2. Get user profile
+    -- 2. Get user profile (with name composed from nombre + apellido)
     SELECT jsonb_build_object(
         'id', u.id,
         'auth_user_id', u.auth_user_id,
-        'nombre', u.nombre,
-        'apellido', u.apellido,
+        'name', TRIM(COALESCE(u.nombre, '') || ' ' || COALESCE(u.apellido, '')),
         'email', u.email,
         'telefono', u.telefono,
-        'activo', u.activo,
+        'active', u.activo,
         'empresa_id', u.empresa_id,
         'rol_id', u.rol_id
     ) INTO v_user
@@ -293,9 +394,9 @@ BEGIN
         'id', fc.id,
         'licencia', fc.licencia,
         'telefono', fc.telefono,
-        'estado', fc.estado,
+        'status', fc.estado,
         'foto', fc.foto
-    ) INTO v_driver
+    ), fc.id INTO v_driver, v_driver_id
     FROM fleet_conductores fc
     WHERE fc.usuario_id = (v_user->>'id')::UUID
       AND fc.empresa_id = v_empresa_id
@@ -303,10 +404,10 @@ BEGIN
     LIMIT 1;
 
     -- 4. Get assigned vehicle
-    IF v_driver IS NOT NULL THEN
+    IF v_driver_id IS NOT NULL THEN
         SELECT jsonb_build_object(
             'id', fv.id,
-            'matricula', fv.matricula,
+            'plate', fv.matricula,
             'marca', fv.marca,
             'modelo', fv.modelo,
             'anio', fv.anio
@@ -314,111 +415,124 @@ BEGIN
         FROM fleet_vehiculos fv
         WHERE fv.id = (
             SELECT vehiculo_actual FROM fleet_conductores
-            WHERE id = (v_driver->>'id')::UUID
+            WHERE id = v_driver_id
         )
         AND fv.deleted_at IS NULL
         LIMIT 1;
     END IF;
 
-    -- 5. Get active trip
-    IF v_driver IS NOT NULL THEN
+    -- 5. Get active trip (include 'pausado' too)
+    IF v_driver_id IS NOT NULL THEN
         SELECT jsonb_build_object(
             'id', ov.id,
             'codigo', ov.codigo,
-            'estado', ov.estado,
-            'stops_progress', COALESCE(ov.stops_progress, 0),
-            'total_stops', (
-                SELECT COUNT(*)::INTEGER
-                FROM operations_checkpoints oc
-                WHERE oc.viaje_id = ov.id AND oc.deleted_at IS NULL
-            ),
-            'progress_percent', CASE
-                WHEN (SELECT COUNT(*) FROM operations_checkpoints oc WHERE oc.viaje_id = ov.id AND oc.deleted_at IS NULL) > 0
-                THEN (COALESCE(ov.stops_progress, 0)::DECIMAL /
-                      (SELECT COUNT(*)::DECIMAL FROM operations_checkpoints oc WHERE oc.viaje_id = ov.id AND oc.deleted_at IS NULL) * 100)
-                ELSE 0
-            END,
-            'packages_remaining', (
-                SELECT COUNT(*)::INTEGER
-                FROM operations_viajes_paquetes ovp
-                WHERE ovp.viaje_id = ov.id
-                  AND ovp.estado != 'entregado'
-                  AND ovp.deleted_at IS NULL
-            ),
-            'departure_time', ov.hora_real_salida,
-            'estimated_arrival', ov.hora_programada_llegada,
+            'status', ov.estado,
+            'departure_time', to_char(ov.hora_real_salida, 'HH24:MI'),
+            'estimated_arrival', to_char(ov.hora_programada_llegada, 'HH24:MI'),
             'total_distance', ov.km_estimados,
-            'remaining_distance', ov.distancia_real_km
-        ) INTO v_trip
+            'remaining_distance', COALESCE(ov.distancia_real_km, ov.km_estimados)
+        ), ov.id INTO v_trip, v_trip_id
         FROM operations_viajes ov
         JOIN operations_viajes_conductores ovc ON ovc.viaje_id = ov.id
-        WHERE ovc.conductor_id = (v_driver->>'id')::UUID
-          AND ov.estado IN ('en_curso', 'programado')
+        WHERE ovc.conductor_id = v_driver_id
+          AND ov.estado IN ('en_curso', 'programado', 'pausado')
           AND ov.deleted_at IS NULL
           AND ovc.deleted_at IS NULL
         ORDER BY ov.created_at DESC
         LIMIT 1;
     END IF;
 
-    -- 6. Get current stop (first incomplete checkpoint)
-    IF v_trip IS NOT NULL THEN
+    -- 6. Calculate trip progress from checkpoints (real data, not stored columns)
+    IF v_trip_id IS NOT NULL THEN
+        SELECT COUNT(*)::INTEGER INTO v_total_stops
+        FROM operations_checkpoints
+        WHERE viaje_id = v_trip_id AND deleted_at IS NULL;
+
+        SELECT COUNT(*)::INTEGER INTO v_completed_stops
+        FROM operations_checkpoints
+        WHERE viaje_id = v_trip_id
+          AND estado = 'completado'
+          AND deleted_at IS NULL;
+
+        -- Update trip JSON with calculated fields
+        v_trip := v_trip || jsonb_build_object(
+            'stops_progress', v_completed_stops,
+            'total_stops', v_total_stops,
+            'progress_percent', CASE
+                WHEN v_total_stops > 0 THEN v_completed_stops::DECIMAL / v_total_stops::DECIMAL
+                ELSE 0
+            END,
+            'packages_remaining', (
+                SELECT COUNT(*)::INTEGER
+                FROM operations_viajes_paquetes ovp
+                WHERE ovp.viaje_id = v_trip_id
+                  AND ovp.estado != 'entregado'
+                  AND ovp.deleted_at IS NULL
+            )
+        );
+    END IF;
+
+    -- 7. Get current stop (first incomplete checkpoint) with checkpoint_id
+    IF v_trip_id IS NOT NULL THEN
         SELECT jsonb_build_object(
-            'id', oc.id,
-            'nombre', op.nombre,
+            'id', op.id,
+            'checkpoint_id', oc.id,
+            'name', op.nombre,
             'address', op.direccion,
-            'customer_name', cs.nombre,
+            'customer_name', COALESCE(
+                (SELECT cs.nombre FROM customers_clientes cs
+                 JOIN customers_direcciones cd ON cd.cliente_id = cs.id
+                 WHERE cd.id = op.direccion_id LIMIT 1),
+                ''
+            ),
             'latitud', op.latitud,
             'longitud', op.longitud,
+            'distance_km', 0,
             'eta_minutes', op.eta_minutos,
             'packages', (
                 SELECT COUNT(*)::INTEGER
                 FROM operations_viajes_paquetes ovp
-                WHERE ovp.viaje_id = oc.viaje_id
+                WHERE ovp.viaje_id = v_trip_id
                   AND ovp.parada_id = oc.parada_id
                   AND ovp.deleted_at IS NULL
             )
         ) INTO v_current_stop
         FROM operations_checkpoints oc
         LEFT JOIN operations_paradas op ON oc.parada_id = op.id
-        LEFT JOIN customers_clientes cs ON op.direccion_id IN (
-            SELECT id FROM customers_direcciones WHERE cliente_id = cs.id
-        )
-        WHERE oc.viaje_id = (v_trip->>'id')::UUID
+        WHERE oc.viaje_id = v_trip_id
           AND oc.estado IN ('pendiente', 'llego')
           AND oc.deleted_at IS NULL
-        ORDER BY (
-            SELECT orden FROM operations_paradas WHERE id = oc.parada_id
-        )
+        ORDER BY (SELECT orden FROM operations_paradas WHERE id = oc.parada_id)
         LIMIT 1;
 
-        -- 7. Get all stops for progress
+        -- 8. Get all stops for progress
         SELECT jsonb_agg(
             jsonb_build_object(
                 'id', oc.id,
-                'nombre', op.nombre,
+                'name', op.nombre,
                 'orden', (SELECT orden FROM operations_paradas WHERE id = oc.parada_id),
-                'estado', oc.estado
+                'status', oc.estado
             ) ORDER BY (SELECT orden FROM operations_paradas WHERE id = oc.parada_id)
         ) INTO v_stops
         FROM operations_checkpoints oc
         LEFT JOIN operations_paradas op ON oc.parada_id = op.id
-        WHERE oc.viaje_id = (v_trip->>'id')::UUID
+        WHERE oc.viaje_id = v_trip_id
           AND oc.deleted_at IS NULL;
     END IF;
 
-    -- 8. Get checklist for current trip
-    IF v_trip IS NOT NULL THEN
+    -- 9. Get checklist for current trip
+    IF v_trip_id IS NOT NULL THEN
         SELECT jsonb_build_object(
             'id', fc.id,
             'tipo', fc.tipo,
-            'estado', fc.estado,
+            'status', fc.estado,
             'items', (
                 SELECT jsonb_agg(
                     jsonb_build_object(
                         'id', fci.id,
-                        'nombre', fci.nombre,
+                        'name', fci.nombre,
                         'categoria', fci.categoria,
-                        'estado', fci.estado,
+                        'status', fci.estado,
                         'observacion', fci.observacion
                     )
                 )
@@ -427,19 +541,19 @@ BEGIN
             )
         ) INTO v_checklist
         FROM fleet_checklists fc
-        WHERE fc.viaje_id = (v_trip->>'id')::UUID
+        WHERE fc.viaje_id = v_trip_id
           AND fc.deleted_at IS NULL
         ORDER BY fc.created_at DESC
         LIMIT 1;
     END IF;
 
-    -- 9. Build result
+    -- 10. Build result
     v_result := jsonb_build_object(
         'user', v_user,
         'driver', v_driver,
         'vehicle', v_vehicle,
         'trip', v_trip,
-        'current_stop', v_current_stop,
+        'currentStop', v_current_stop,
         'stops', COALESCE(v_stops, '[]'::jsonb),
         'checklist', v_checklist,
         'device', jsonb_build_object(
@@ -459,49 +573,3 @@ $$;
 GRANT EXECUTE ON FUNCTION public.complete_delivery(UUID, UUID, UUID, VARCHAR, TEXT, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.verify_delivery_otp(UUID, VARCHAR) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_driver_bootstrap() TO authenticated;
-
--- ============================================================================
--- 5. Add missing columns to operations_checkpoints if needed
--- ============================================================================
-
--- Add metadata column for OTP storage
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'operations_checkpoints'
-          AND column_name = 'metadata'
-    ) THEN
-        ALTER TABLE operations_checkpoints ADD COLUMN metadata JSONB;
-    END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'operations_checkpoints'
-          AND column_name = 'foto_evidencia_url'
-    ) THEN
-        ALTER TABLE operations_checkpoints ADD COLUMN foto_evidencia_url TEXT;
-    END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'operations_checkpoints'
-          AND column_name = 'firma_receptor'
-    ) THEN
-        ALTER TABLE operations_checkpoints ADD COLUMN firma_receptor TEXT;
-    END IF;
-END $$;
-
--- ============================================================================
--- 6. Add otp_expires_at to checkpoints for OTP expiry tracking
--- ============================================================================
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'operations_checkpoints'
-          AND column_name = 'otp_expires_at'
-    ) THEN
-        ALTER TABLE operations_checkpoints ADD COLUMN otp_expires_at TIMESTAMPTZ;
-    END IF;
-END $$;

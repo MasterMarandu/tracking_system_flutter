@@ -418,6 +418,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
         _tripState = TripState.paused;
       case DriverSessionState.completed:
         _tripState = TripState.completed;
+      case DriverSessionState.noTripAssigned:
+        _tripState = TripState.noTrip;
       default:
         _tripState = TripState.preTrip;
     }
@@ -917,7 +919,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   // ==================== NEXT STOP CARD ====================
 
   Widget _buildNextStopCard(BuildContext context) {
-    if (_tripState == TripState.completed || _tripState == TripState.preTrip) {
+    if (_tripState == TripState.completed) {
+      return const SizedBox.shrink();
+    }
+    if (_tripData.nextStopName.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -961,15 +966,21 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                     color: Colors.white.withValues(alpha: 0.2),
                   ),
                   _Badge(
-                    label: _tripState == TripState.geofenceEntry
-                        ? 'EN DESTINO'
-                        : 'EN RUTA',
-                    icon: _tripState == TripState.geofenceEntry
-                        ? Icons.location_on
-                        : Icons.check_circle,
-                    color: _tripState == TripState.geofenceEntry
-                        ? Colors.orangeAccent.withValues(alpha: 0.25)
-                        : Colors.greenAccent.withValues(alpha: 0.2),
+                    label: _tripState == TripState.preTrip
+                        ? 'PROGRAMADO'
+                        : _tripState == TripState.geofenceEntry
+                            ? 'EN DESTINO'
+                            : 'EN RUTA',
+                    icon: _tripState == TripState.preTrip
+                        ? Icons.schedule
+                        : _tripState == TripState.geofenceEntry
+                            ? Icons.location_on
+                            : Icons.check_circle,
+                    color: _tripState == TripState.preTrip
+                        ? Colors.white.withValues(alpha: 0.25)
+                        : _tripState == TripState.geofenceEntry
+                            ? Colors.orangeAccent.withValues(alpha: 0.25)
+                            : Colors.greenAccent.withValues(alpha: 0.2),
                   ),
                 ],
               ),
@@ -1103,7 +1114,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   // ==================== TRIP PROGRESS ====================
 
   Widget _buildTripProgress(BuildContext context) {
-    if (_tripState == TripState.preTrip || _tripState == TripState.completed) {
+    if (_tripState == TripState.completed) {
+      return const SizedBox.shrink();
+    }
+    if (_tripData.totalStops == 0 && _tripData.totalDistance == 0) {
       return const SizedBox.shrink();
     }
 

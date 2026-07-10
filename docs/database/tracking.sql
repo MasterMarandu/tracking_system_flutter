@@ -477,6 +477,7 @@ CREATE TRIGGER update_clientes_updated_at BEFORE UPDATE ON customers_clientes
 -- Tabla: direcciones
 CREATE TABLE customers_direcciones (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
     cliente_id UUID NOT NULL REFERENCES customers_clientes(id) ON DELETE CASCADE,
     tipo VARCHAR(20) DEFAULT 'principal' CHECK (tipo IN ('principal', 'envio', 'facturacion', 'otra')),
     direccion TEXT NOT NULL,
@@ -499,6 +500,7 @@ CREATE TABLE customers_direcciones (
 );
 
 CREATE INDEX idx_direcciones_cliente ON customers_direcciones(cliente_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_direcciones_empresa ON customers_direcciones(empresa_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_direcciones_ubicacion ON customers_direcciones USING GIST(ubicacion);
 
 CREATE TRIGGER update_direcciones_updated_at BEFORE UPDATE ON customers_direcciones
@@ -507,6 +509,7 @@ CREATE TRIGGER update_direcciones_updated_at BEFORE UPDATE ON customers_direccio
 -- Tabla: remitentes
 CREATE TABLE customers_remitentes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
     cliente_id UUID NOT NULL REFERENCES customers_clientes(id) ON DELETE CASCADE,
     direccion_id UUID REFERENCES customers_direcciones(id),
     nombre VARCHAR(255) NOT NULL,
@@ -524,6 +527,7 @@ CREATE TABLE customers_remitentes (
 );
 
 CREATE INDEX idx_remitentes_cliente ON customers_remitentes(cliente_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_remitentes_empresa ON customers_remitentes(empresa_id) WHERE deleted_at IS NULL;
 
 CREATE TRIGGER update_remitentes_updated_at BEFORE UPDATE ON customers_remitentes
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
@@ -531,6 +535,7 @@ CREATE TRIGGER update_remitentes_updated_at BEFORE UPDATE ON customers_remitente
 -- Tabla: destinatarios
 CREATE TABLE customers_destinatarios (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
     cliente_id UUID NOT NULL REFERENCES customers_clientes(id) ON DELETE CASCADE,
     direccion_id UUID REFERENCES customers_direcciones(id),
     nombre VARCHAR(255) NOT NULL,
@@ -548,6 +553,7 @@ CREATE TABLE customers_destinatarios (
 );
 
 CREATE INDEX idx_destinatarios_cliente ON customers_destinatarios(cliente_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_destinatarios_empresa ON customers_destinatarios(empresa_id) WHERE deleted_at IS NULL;
 
 CREATE TRIGGER update_destinatarios_updated_at BEFORE UPDATE ON customers_destinatarios
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
@@ -782,6 +788,7 @@ ALTER TABLE operations_eta
 -- Tabla: checkpoints
 CREATE TABLE operations_checkpoints (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id) ON DELETE CASCADE,
     viaje_id UUID NOT NULL REFERENCES operations_viajes(id) ON DELETE CASCADE,
     parada_id UUID REFERENCES operations_paradas(id),
     hora_llegada TIMESTAMP WITH TIME ZONE,
@@ -806,6 +813,7 @@ CREATE TABLE operations_checkpoints (
 CREATE INDEX idx_checkpoints_viaje ON operations_checkpoints(viaje_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_checkpoints_parada ON operations_checkpoints(parada_id);
 CREATE INDEX idx_checkpoints_estado ON operations_checkpoints(estado);
+CREATE INDEX idx_checkpoints_empresa ON operations_checkpoints(empresa_id) WHERE deleted_at IS NULL;
 
 CREATE TRIGGER update_checkpoints_updated_at BEFORE UPDATE ON operations_checkpoints
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
@@ -3160,3 +3168,176 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION public.guardar_geocerca TO anon, authenticated, service_role;
+
+
+CREATE TABLE delivery_sesiones (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID NOT NULL REFERENCES core_empresas(id),
+    viaje_id UUID NOT NULL REFERENCES operations_viajes(id),
+    parada_id UUID NOT NULL REFERENCES operations_paradas(id),
+    conductor_id UUID NOT NULL REFERENCES fleet_conductores(id),
+    paso_actual VARCHAR(30) NOT NULL DEFAULT 'confirm_arrival',
+    paquetes_escaneados JSONB NOT NULL DEFAULT '[]'::jsonb,
+    foto_completada BOOLEAN NOT NULL DEFAULT FALSE,
+    firma_completada BOOLEAN NOT NULL DEFAULT FALSE,
+    otp_verificado BOOLEAN NOT NULL DEFAULT FALSE,
+    estado VARCHAR(20) NOT NULL DEFAULT 'en_proceso'
+        CHECK (estado IN ('en_proceso', 'completada', 'cancelada')),
+    client_operation_id UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================================
+-- AUTO-GENERATE CHECKPOINTS
+-- Trigger que genera automáticamente los checkpoints cuando se crea un viaje
+-- o se le asigna una ruta. Evita que viajes queden sin paradas en la app.
+-- ============================================================================
+
+-- Función
+CREATE OR REPLACE FUNCTION public.fn_auto_generate_checkpoints()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    -- Solo generar si el viaje tiene ruta asignada
+    IF NEW.ruta_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    -- Si ya hay checkpoints para este viaje, no duplicar
+    IF EXISTS (
+        SELECT 1 FROM operations_checkpoints
+        WHERE viaje_id = NEW.id
+          AND deleted_at IS NULL
+    ) THEN
+        RETURN NEW;
+    END IF;
+
+    -- Si la ruta no tiene paradas, no hacer nada
+    IF NOT EXISTS (
+        SELECT 1 FROM operations_paradas
+        WHERE ruta_id = NEW.ruta_id
+          AND deleted_at IS NULL
+    ) THEN
+        RETURN NEW;
+    END IF;
+
+    -- Generar un checkpoint por cada parada, en orden
+    INSERT INTO operations_checkpoints (
+        empresa_id,
+        viaje_id,
+        parada_id,
+        estado,
+        latitud,
+        longitud
+    )
+    SELECT
+        NEW.empresa_id,
+        NEW.id,
+        p.id,
+        'pendiente',
+        p.latitud,
+        p.longitud
+    FROM operations_paradas p
+    WHERE p.ruta_id = NEW.ruta_id
+      AND p.deleted_at IS NULL
+    ORDER BY p.orden;
+
+    RETURN NEW;
+END;
+$$;
+
+-- Trigger: se dispara en INSERT o cuando se actualiza ruta_id
+DROP TRIGGER IF EXISTS trg_auto_generate_checkpoints ON operations_viajes;
+
+CREATE TRIGGER trg_auto_generate_checkpoints
+    AFTER INSERT OR UPDATE OF ruta_id ON operations_viajes
+    FOR EACH ROW
+    WHEN (NEW.ruta_id IS NOT NULL AND NEW.deleted_at IS NULL)
+    EXECUTE FUNCTION public.fn_auto_generate_checkpoints();
+
+-- Backfill: generar checkpoints para viajes que ya existen con ruta pero sin checkpoints
+DO $$
+DECLARE
+    v_count INTEGER := 0;
+BEGIN
+    WITH inserted AS (
+        INSERT INTO operations_checkpoints (
+            empresa_id,
+            viaje_id,
+            parada_id,
+            estado,
+            latitud,
+            longitud
+        )
+        SELECT
+            v.empresa_id,
+            v.id,
+            p.id,
+            'pendiente',
+            p.latitud,
+            p.longitud
+        FROM operations_viajes v
+        JOIN operations_paradas p ON p.ruta_id = v.ruta_id
+        WHERE v.ruta_id IS NOT NULL
+          AND v.deleted_at IS NULL
+          AND p.deleted_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM operations_checkpoints oc
+              WHERE oc.viaje_id = v.id
+                AND oc.parada_id = p.id
+                AND oc.deleted_at IS NULL
+          )
+        ORDER BY v.id, p.orden
+        RETURNING id
+    )
+    SELECT COUNT(*) INTO v_count FROM inserted;
+
+    RAISE NOTICE 'Backfill: % checkpoints generados para viajes existentes', v_count;
+END $$;
+
+-- ============================================================================
+-- Backfill de empresa_id en tablas de customers que ya tienen datos
+-- Solo necesario si estás corriendo esto sobre una base con datos preexistentes
+-- ============================================================================
+DO $$
+BEGIN
+    -- customers_direcciones
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'customers_direcciones' AND column_name = 'empresa_id') THEN
+        UPDATE customers_direcciones cd
+        SET empresa_id = c.empresa_id
+        FROM customers_clientes c
+        WHERE cd.cliente_id = c.id
+          AND cd.empresa_id IS NULL;
+
+        RAISE NOTICE 'Backfill customers_direcciones: OK';
+    END IF;
+
+    -- customers_remitentes
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'customers_remitentes' AND column_name = 'empresa_id') THEN
+        UPDATE customers_remitentes cr
+        SET empresa_id = c.empresa_id
+        FROM customers_clientes c
+        WHERE cr.cliente_id = c.id
+          AND cr.empresa_id IS NULL;
+
+        RAISE NOTICE 'Backfill customers_remitentes: OK';
+    END IF;
+
+    -- customers_destinatarios
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'customers_destinatarios' AND column_name = 'empresa_id') THEN
+        UPDATE customers_destinatarios cd
+        SET empresa_id = c.empresa_id
+        FROM customers_clientes c
+        WHERE cd.cliente_id = c.id
+          AND cd.empresa_id IS NULL;
+
+        RAISE NOTICE 'Backfill customers_destinatarios: OK';
+    END IF;
+END $$;

@@ -16,7 +16,12 @@ class DriverBootstrapService {
       throw Exception('Bootstrap devolvió datos nulos');
     }
 
-    return DriverBootstrap.fromJson(data as Map<String, dynamic>);
+    final map = data as Map<String, dynamic>;
+    if (map['user'] == null) {
+      throw Exception('Bootstrap sin perfil de usuario');
+    }
+
+    return DriverBootstrap.fromJson(map);
   }
 
   Future<DriverBootstrap> fetchBootstrapFallback() async {
@@ -99,9 +104,8 @@ class DriverBootstrapService {
         .from('operations_viajes_conductores')
         .select('viaje_id')
         .eq('conductor_id', conductorId)
-        .filter('estado', 'in', '("asignado","aceptado","en_curso")')
         .filter('deleted_at', 'is', null)
-        .order('created_at', ascending: false)
+        .order('fecha_asignacion', ascending: false)
         .limit(1);
 
     BootstrapTrip? trip;
@@ -115,6 +119,8 @@ class DriverBootstrapService {
           .select()
           .eq('id', viajeId)
           .filter('deleted_at', 'is', null)
+          .filter(
+              'estado', 'in', '("programado","en_curso","pausado","aceptado")')
           .limit(1);
 
       if (viajes.isNotEmpty) {
@@ -125,8 +131,8 @@ class DriverBootstrapService {
           status: v['estado'] as String,
           departureTime: v['hora_real_salida']?.toString(),
           estimatedArrival: v['hora_programada_llegada']?.toString(),
-          totalDistance: (v['distancia_real_km'] as num?)?.toDouble(),
-          remainingDistance: null,
+          totalDistance: (v['km_estimados'] as num?)?.toDouble(),
+          remainingDistance: (v['distancia_real_km'] as num?)?.toDouble(),
           stopsProgress: null,
           totalStops: null,
           packagesRemaining: null,
@@ -157,6 +163,7 @@ class DriverBootstrapService {
 
           checklist = BootstrapChecklist(
             id: checklistId,
+            type: cl['tipo'] as String? ?? 'pre_viaje',
             status: cl['estado'] as String,
             completed: completedCount,
             total: items.length,
@@ -166,6 +173,7 @@ class DriverBootstrapService {
                       name: i['nombre'] as String,
                       category: i['categoria'] as String? ?? '',
                       status: i['estado'] as String,
+                      observation: i['observacion'] as String?,
                     ))
                 .toList(),
           );
