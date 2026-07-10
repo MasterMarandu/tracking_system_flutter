@@ -69,6 +69,7 @@ class SupabaseConfig {
   // RPC Functions
   static const String rpcGenerarTrackingNumber = 'generar_tracking_number';
   static const String rpcCalcularDistancia = 'calcular_distancia_km';
+  static const String rpcGetDriverBootstrap = 'get_driver_bootstrap';
   
   // Views
   static const String viewPaquetesCompleto = 'v_paquetes_completo';

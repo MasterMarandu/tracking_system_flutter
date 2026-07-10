@@ -1,83 +1,22 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tracking_system_app/features/sync/data/sync_queue.dart';
+import 'package:tracking_system_app/features/sync/domain/sync_engine.dart';
 
-class SyncScreen extends StatefulWidget {
+class SyncScreen extends ConsumerStatefulWidget {
   const SyncScreen({super.key});
 
   @override
-  State<SyncScreen> createState() => _SyncScreenState();
+  ConsumerState<SyncScreen> createState() => _SyncScreenState();
 }
 
-class _SyncScreenState extends State<SyncScreen> {
-  bool _isSyncing = false;
-  double _syncProgress = 0.0;
-
-  final bool _hasInternet = true;
-  final bool _hasGps = true;
-  final String _lastSyncTime = '2026-07-08 09:45 AM';
-  final int _pendingItems = 12;
-
-  final List<_SyncError> _syncErrors = [
-    _SyncError(
-      title: 'Delivery #4521 - Photo upload failed',
-      timestamp: '2026-07-08 09:30 AM',
-      type: SyncErrorType.upload,
-    ),
-    _SyncError(
-      title: 'Route update for Truck #T-1038 - Timeout',
-      timestamp: '2026-07-08 09:15 AM',
-      type: SyncErrorType.timeout,
-    ),
-    _SyncError(
-      title: 'Signature capture #7823 - Invalid format',
-      timestamp: '2026-07-08 08:50 AM',
-      type: SyncErrorType.format,
-    ),
-  ];
-
-  void _startSync() {
-    if (_isSyncing) return;
-
-    setState(() {
-      _isSyncing = true;
-      _syncProgress = 0.0;
-    });
-
-    _simulateSync();
-  }
-
-  void _simulateSync() async {
-    for (int i = 1; i <= 10; i++) {
-      await Future.delayed(const Duration(milliseconds: 400));
-      if (!mounted) return;
-      setState(() {
-        _syncProgress = i / 10;
-      });
-    }
-
-    await Future.delayed(const Duration(milliseconds: 200));
-    if (!mounted) return;
-    setState(() {
-      _isSyncing = false;
-      _syncProgress = 0.0;
-    });
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Sync completed successfully!'),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      );
-    }
-  }
-
+class _SyncScreenState extends ConsumerState<SyncScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final syncState = ref.watch(syncEngineProvider);
+    final syncNotifier = ref.read(syncEngineProvider.notifier);
 
     return Scaffold(
       appBar: AppBar(
@@ -85,7 +24,9 @@ class _SyncScreenState extends State<SyncScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _isSyncing ? null : _startSync,
+            onPressed: syncState.isSyncing
+                ? null
+                : () => syncNotifier.syncNow(),
           ),
         ],
       ),
@@ -94,15 +35,17 @@ class _SyncScreenState extends State<SyncScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildStatusCard(colorScheme, theme),
+            _buildStatusCard(syncState, colorScheme, theme),
             const SizedBox(height: 16),
-            _buildPendingCard(colorScheme, theme),
+            _buildPendingCard(syncState, colorScheme, theme),
             const SizedBox(height: 16),
-            if (_isSyncing) _buildProgressCard(colorScheme, theme),
-            if (_isSyncing) const SizedBox(height: 16),
-            _buildSyncButton(colorScheme),
+            if (syncState.isSyncing) _buildProgressCard(syncState, colorScheme, theme),
+            if (syncState.isSyncing) const SizedBox(height: 16),
+            _buildSyncButton(syncState, syncNotifier, colorScheme),
             const SizedBox(height: 24),
-            _buildErrorSection(colorScheme, theme),
+            _buildErrorSection(syncState, colorScheme, theme),
+            const SizedBox(height: 24),
+            _buildOperationsList(syncState, colorScheme, theme),
             const SizedBox(height: 32),
           ],
         ),
@@ -110,7 +53,9 @@ class _SyncScreenState extends State<SyncScreen> {
     );
   }
 
-  Widget _buildStatusCard(ColorScheme colorScheme, ThemeData theme) {
+  Widget _buildStatusCard(SyncState syncState, ColorScheme colorScheme, ThemeData theme) {
+    final isOnline = syncState.isOnline;
+
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
@@ -132,15 +77,7 @@ class _SyncScreenState extends State<SyncScreen> {
             _buildStatusRow(
               icon: Icons.wifi,
               label: 'Internet',
-              isConnected: _hasInternet,
-              colorScheme: colorScheme,
-              theme: theme,
-            ),
-            const Divider(height: 24),
-            _buildStatusRow(
-              icon: Icons.gps_fixed,
-              label: 'GPS',
-              isConnected: _hasGps,
+              isConnected: isOnline,
               colorScheme: colorScheme,
               theme: theme,
             ),
@@ -161,7 +98,9 @@ class _SyncScreenState extends State<SyncScreen> {
                 ),
                 const Spacer(),
                 Text(
-                  _lastSyncTime,
+                  syncState.lastSyncTime != null
+                      ? _formatDateTime(syncState.lastSyncTime!)
+                      : 'Never',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w500,
                   ),
@@ -224,7 +163,7 @@ class _SyncScreenState extends State<SyncScreen> {
     );
   }
 
-  Widget _buildPendingCard(ColorScheme colorScheme, ThemeData theme) {
+  Widget _buildPendingCard(SyncState syncState, ColorScheme colorScheme, ThemeData theme) {
     return Card(
       elevation: 0,
       color: colorScheme.secondaryContainer,
@@ -253,7 +192,7 @@ class _SyncScreenState extends State<SyncScreen> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '$_pendingItems items waiting to sync',
+                    '${syncState.pendingOperations} items waiting to sync',
                     style: theme.textTheme.titleLarge?.copyWith(
                       fontWeight: FontWeight.bold,
                       color: colorScheme.onSecondaryContainer,
@@ -268,7 +207,7 @@ class _SyncScreenState extends State<SyncScreen> {
     );
   }
 
-  Widget _buildProgressCard(ColorScheme colorScheme, ThemeData theme) {
+  Widget _buildProgressCard(SyncState syncState, ColorScheme colorScheme, ThemeData theme) {
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(
@@ -282,18 +221,17 @@ class _SyncScreenState extends State<SyncScreen> {
           children: [
             Row(
               children: [
-                SizedBox(
+                const SizedBox(
                   width: 20,
                   height: 20,
                   child: CircularProgressIndicator(
                     strokeWidth: 2.5,
-                    value: _syncProgress,
-                    color: colorScheme.primary,
+                    color: Color(0xFF1565C0),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  'Syncing... ${(_syncProgress * 100).toInt()}%',
+                  'Syncing...',
                   style: theme.textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.w600,
                     color: colorScheme.primary,
@@ -304,11 +242,9 @@ class _SyncScreenState extends State<SyncScreen> {
             const SizedBox(height: 12),
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
-              child: LinearProgressIndicator(
-                value: _syncProgress,
+              child: const LinearProgressIndicator(
                 minHeight: 8,
-                backgroundColor: colorScheme.surfaceContainerHighest,
-                color: colorScheme.primary,
+                backgroundColor: Color(0xFFE0E0E0),
               ),
             ),
           ],
@@ -317,12 +253,16 @@ class _SyncScreenState extends State<SyncScreen> {
     );
   }
 
-  Widget _buildSyncButton(ColorScheme colorScheme) {
+  Widget _buildSyncButton(
+    SyncState syncState,
+    SyncEngine syncNotifier,
+    ColorScheme colorScheme,
+  ) {
     return SizedBox(
       width: double.infinity,
       child: FilledButton.icon(
-        onPressed: _isSyncing ? null : _startSync,
-        icon: _isSyncing
+        onPressed: syncState.isSyncing ? null : () => syncNotifier.syncNow(),
+        icon: syncState.isSyncing
             ? const SizedBox(
                 width: 18,
                 height: 18,
@@ -332,7 +272,7 @@ class _SyncScreenState extends State<SyncScreen> {
                 ),
               )
             : const Icon(Icons.sync),
-        label: Text(_isSyncing ? 'Syncing...' : 'Sync Now'),
+        label: Text(syncState.isSyncing ? 'Syncing...' : 'Sync Now'),
         style: FilledButton.styleFrom(
           padding: const EdgeInsets.symmetric(vertical: 14),
           shape: RoundedRectangleBorder(
@@ -343,8 +283,8 @@ class _SyncScreenState extends State<SyncScreen> {
     );
   }
 
-  Widget _buildErrorSection(ColorScheme colorScheme, ThemeData theme) {
-    if (_syncErrors.isEmpty) {
+  Widget _buildErrorSection(SyncState syncState, ColorScheme colorScheme, ThemeData theme) {
+    if (syncState.error == null) {
       return Card(
         elevation: 0,
         shape: RoundedRectangleBorder(
@@ -379,7 +319,7 @@ class _SyncScreenState extends State<SyncScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Sync Errors',
+          'Last Sync Error',
           style: theme.textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.w600,
             color: colorScheme.error,
@@ -392,45 +332,18 @@ class _SyncScreenState extends State<SyncScreen> {
             borderRadius: BorderRadius.circular(16),
             side: BorderSide(color: colorScheme.error.withValues(alpha: 0.3)),
           ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Column(
-              children: List.generate(_syncErrors.length * 2 - 1, (index) {
-                if (index.isOdd) {
-                  return Divider(
-                    height: 1,
-                    indent: 56,
-                    endIndent: 16,
-                    color: colorScheme.outlineVariant,
-                  );
-                }
-                final error = _syncErrors[index ~/ 2];
-                return ListTile(
-                  leading: Icon(
-                    _getErrorIcon(error.type),
-                    color: colorScheme.error,
-                  ),
-                  title: Text(
-                    error.title,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  subtitle: Text(
-                    error.timestamp,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  trailing: IconButton(
-                    icon: Icon(
-                      Icons.refresh,
-                      color: colorScheme.primary,
-                    ),
-                    onPressed: () {},
-                  ),
-                );
-              }),
+          child: ListTile(
+            leading: Icon(
+              Icons.error_outline,
+              color: colorScheme.error,
+            ),
+            title: Text(
+              syncState.error!,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w500,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ),
@@ -438,28 +351,184 @@ class _SyncScreenState extends State<SyncScreen> {
     );
   }
 
-  IconData _getErrorIcon(SyncErrorType type) {
-    switch (type) {
-      case SyncErrorType.upload:
-        return Icons.cloud_upload_outlined;
-      case SyncErrorType.timeout:
-        return Icons.timer_off_outlined;
-      case SyncErrorType.format:
-        return Icons.error_outline;
+  Widget _buildOperationsList(SyncState syncState, ColorScheme colorScheme, ThemeData theme) {
+    return FutureBuilder<List<SyncOperation>>(
+      future: _loadOperations(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data!.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        final operations = snapshot.data!;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Queued Operations',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: colorScheme.outlineVariant),
+              ),
+              child: ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: operations.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  indent: 56,
+                  endIndent: 16,
+                  color: colorScheme.outlineVariant,
+                ),
+                itemBuilder: (context, index) {
+                  final op = operations[index];
+                  return ListTile(
+                    leading: Icon(
+                      _getOperationIcon(op.type),
+                      color: _getOperationColor(op.status),
+                    ),
+                    title: Text(
+                      _getOperationLabel(op.type),
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    subtitle: Text(
+                      _formatDateTime(op.createdAt),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    trailing: _buildOperationStatusBadge(op.status, theme),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<List<SyncOperation>> _loadOperations() async {
+    try {
+      final queue = await SyncQueue.create();
+      return await queue.getPendingOperations();
+    } catch (_) {
+      return [];
     }
   }
-}
 
-enum SyncErrorType { upload, timeout, format }
+  Widget _buildOperationStatusBadge(SyncOperationStatus status, ThemeData theme) {
+    Color color;
+    String label;
+    IconData icon;
 
-class _SyncError {
-  final String title;
-  final String timestamp;
-  final SyncErrorType type;
+    switch (status) {
+      case SyncOperationStatus.pending:
+        color = Colors.orange;
+        label = 'Pending';
+        icon = Icons.schedule;
+      case SyncOperationStatus.processing:
+        color = Colors.blue;
+        label = 'Processing';
+        icon = Icons.sync;
+      case SyncOperationStatus.completed:
+        color = Colors.green;
+        label = 'Done';
+        icon = Icons.check_circle;
+      case SyncOperationStatus.failed:
+        color = Colors.red;
+        label = 'Failed';
+        icon = Icons.error;
+    }
 
-  const _SyncError({
-    required this.title,
-    required this.timestamp,
-    required this.type,
-  });
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  IconData _getOperationIcon(SyncOperationType type) {
+    switch (type) {
+      case SyncOperationType.completeDelivery:
+        return Icons.check_circle_outline;
+      case SyncOperationType.updateChecklist:
+        return Icons.checklist;
+      case SyncOperationType.verifyOtp:
+        return Icons.pin;
+      case SyncOperationType.submitPhoto:
+        return Icons.camera_alt;
+      case SyncOperationType.submitSignature:
+        return Icons.draw;
+      case SyncOperationType.reportIncident:
+        return Icons.warning_amber;
+      case SyncOperationType.updateTripStatus:
+        return Icons.update;
+    }
+  }
+
+  Color _getOperationColor(SyncOperationStatus status) {
+    switch (status) {
+      case SyncOperationStatus.pending:
+        return Colors.orange;
+      case SyncOperationStatus.processing:
+        return Colors.blue;
+      case SyncOperationStatus.completed:
+        return Colors.green;
+      case SyncOperationStatus.failed:
+        return Colors.red;
+    }
+  }
+
+  String _getOperationLabel(SyncOperationType type) {
+    switch (type) {
+      case SyncOperationType.completeDelivery:
+        return 'Complete Delivery';
+      case SyncOperationType.updateChecklist:
+        return 'Update Checklist';
+      case SyncOperationType.verifyOtp:
+        return 'Verify OTP';
+      case SyncOperationType.submitPhoto:
+        return 'Submit Photo';
+      case SyncOperationType.submitSignature:
+        return 'Submit Signature';
+      case SyncOperationType.reportIncident:
+        return 'Report Incident';
+      case SyncOperationType.updateTripStatus:
+        return 'Update Trip Status';
+    }
+  }
+
+  String _formatDateTime(DateTime dateTime) {
+    final hour = dateTime.hour.toString().padLeft(2, '0');
+    final minute = dateTime.minute.toString().padLeft(2, '0');
+    final day = dateTime.day.toString().padLeft(2, '0');
+    final month = dateTime.month.toString().padLeft(2, '0');
+    return '$day/$month/${dateTime.year} $hour:$minute';
+  }
 }

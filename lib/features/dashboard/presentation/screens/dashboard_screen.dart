@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap.dart';
+import 'package:tracking_system_app/features/dashboard/providers/bootstrap_provider.dart';
 
 // ============================================================================
 // MODELS — Aligned with tracking.sql schema
@@ -217,24 +220,17 @@ class RecentActivity {
 // MAIN SCREEN
 // ============================================================================
 
-class DashboardScreen extends StatefulWidget {
+class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen>
+class _DashboardScreenState extends ConsumerState<DashboardScreen>
     with TickerProviderStateMixin {
   TripState _tripState = TripState.preTrip;
   DeliveryStep _deliveryStep = DeliveryStep.confirmArrival;
-  final DeviceStatus _deviceStatus = const DeviceStatus(
-    gps: true,
-    internet: true,
-    synced: true,
-    batteryPercent: 78,
-    vehiclePlate: 'TRK-4521',
-  );
   late AnimationController _progressAnimation;
   late Animation<double> _progressAnim;
 
@@ -251,43 +247,9 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   bool get _isChecklistComplete => _checklistItems.every((i) => i.isDone);
 
-  TripData _tripData = TripData(
-    driverName: 'Carlos Mendoza',
-    nextStopName: 'Warehouse B - Zona Norte',
-    nextStopAddress: 'Av. Principal 456, Distrito Industrial',
-    customerName: 'Coca Cola Paraguay',
-    distance: 4.2,
-    etaMinutes: 12,
-    etaArrivalTime: DateTime(2026, 7, 10, 9, 22),
-    packages: 5,
-    stopsProgress: 3,
-    totalStops: 8,
-    packagesRemaining: 14,
-    progressPercent: 0.65,
-    departureTime: '08:30',
-    estimatedArrival: '14:30',
-    totalDistance: 45.2,
-    remainingDistance: 18.6,
-    deliveredCount: 18,
-    pendingCount: 5,
-    incidentCount: 2,
-    efficiencyPercent: 0.92,
-  );
-
-  List<ChecklistItem> _checklistItems = const [
-    ChecklistItem(id: '1', name: 'Combustible', category: 'Vehículo'),
-    ChecklistItem(id: '2', name: 'Neumáticos', category: 'Vehículo'),
-    ChecklistItem(id: '3', name: 'Luces', category: 'Vehículo'),
-    ChecklistItem(id: '4', name: 'Frenos', category: 'Vehículo'),
-    ChecklistItem(id: '5', name: 'Espejos', category: 'Vehículo'),
-    ChecklistItem(id: '6', name: 'Documentación', category: 'Documentos'),
-    ChecklistItem(id: '7', name: 'Licencia de conducir', category: 'Documentos'),
-    ChecklistItem(id: '8', name: 'Seguro del vehículo', category: 'Documentos'),
-    ChecklistItem(id: '9', name: 'Fotos del vehículo', category: 'Evidencia'),
-    ChecklistItem(id: '10', name: 'Carga asegurada', category: 'Carga'),
-    ChecklistItem(id: '11', name: 'Sellos verificados', category: 'Carga'),
-    ChecklistItem(id: '12', name: 'Temperatura de carga', category: 'Carga'),
-  ];
+  late TripData _tripData;
+  late DeviceStatus _deviceStatus;
+  late List<ChecklistItem> _checklistItems;
 
   static const _activities = <RecentActivity>[
     RecentActivity(
@@ -316,6 +278,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   List<String> get _packageIds =>
       List.generate(_tripData.packages, (i) => 'TRK-2026-${7000 + i}');
 
+  String? _lastAppliedTripId;
+  ProviderSubscription<DriverBootstrap?>? _bootstrapSubscription;
+
   @override
   void initState() {
     super.initState();
@@ -323,53 +288,122 @@ class _DashboardScreenState extends State<DashboardScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     );
-    _progressAnim = Tween<double>(begin: 0, end: _tripData.progressPercent)
-        .animate(CurvedAnimation(
-      parent: _progressAnimation,
-      curve: Curves.easeOutCubic,
-    ));
+
+    final initial = ref.read(bootstrapProvider);
+    _applyBootstrap(initial);
     _progressAnimation.forward();
+
+    _bootstrapSubscription = ref.listenManual(
+      bootstrapProvider,
+      (previous, next) {
+        if (!mounted || next == null) return;
+        _onBootstrapChanged(next);
+      },
+    );
   }
 
   @override
   void dispose() {
+    _bootstrapSubscription?.close();
     _progressAnimation.dispose();
     _otpController.dispose();
     super.dispose();
   }
 
-  void _setTripState(TripState newState) {
-    setState(() {
-      _tripState = newState;
-      if (newState == TripState.delivering) {
-        _deliveryStep = DeliveryStep.confirmArrival;
-      }
-    });
+  void _onBootstrapChanged(DriverBootstrap next) {
+    setState(() => _applyBootstrap(next));
+    _progressAnimation
+      ..reset()
+      ..forward();
   }
 
-  void _advanceDeliveryStep(StateSetter refreshSheet) {
-    final currentIndex = DeliveryStep.values.indexOf(_deliveryStep);
-    if (currentIndex >= DeliveryStep.values.length - 1) return;
+  void _applyBootstrap(DriverBootstrap? bootstrap) {
+    if (!mounted) return;
+    final b = bootstrap;
 
-    HapticFeedback.lightImpact();
+    if (b == null || !b.user.active) {
+      _tripData = _emptyTripData();
+      _deviceStatus = const DeviceStatus(gps: false, internet: false, synced: false);
+      _checklistItems = const [];
+      _tripState = TripState.preTrip;
+      _progressAnim = _createProgressAnim(0);
+      return;
+    }
 
-    setState(() {
-      _deliveryStep = DeliveryStep.values[currentIndex + 1];
-    });
-    refreshSheet(() {});
-  }
+    _deviceStatus = DeviceStatus(
+      gps: b.device.gps,
+      internet: b.device.internet,
+      synced: b.device.synced,
+      batteryPercent: 78,
+      vehiclePlate: b.vehicle?.plate ?? '',
+    );
 
-  void _resetDeliveryState() {
-    _otpController.clear();
-    _scannedPackageIds.clear();
-    _signatureStrokes = [];
-    _otpFormatValid = false;
-    _otpVerifying = false;
-    _otpVerified = false;
-    _photoTaken = false;
-    _otpAttempts = 0;
-    _currentOutcome = DeliveryOutcome.complete;
-    _incidentReason = null;
+    _checklistItems = b.checklist?.items
+            .map((i) => _mapChecklistStatus(i))
+            .toList() ??
+        _defaultChecklistItems();
+
+    if (b.trip == null) {
+      _tripData = _emptyTripData();
+      _tripState = TripState.preTrip;
+      _progressAnim = _createProgressAnim(0);
+      return;
+    }
+
+    final t = b.trip!;
+
+    _tripData = TripData(
+      driverName: b.user.name,
+      nextStopName: b.currentStop?.name ?? '',
+      nextStopAddress: b.currentStop?.address ?? '',
+      customerName: b.currentStop?.customerName ?? '',
+      distance: b.currentStop?.distanceKm ?? 0,
+      etaMinutes: b.currentStop?.etaMinutes ?? 0,
+      etaArrivalTime: DateTime.now().add(
+          Duration(minutes: b.currentStop?.etaMinutes ?? 0)),
+      packages: b.currentStop?.packages ?? 0,
+      stopsProgress: t.stopsProgress ?? 0,
+      totalStops: t.totalStops ?? 0,
+      packagesRemaining: t.packagesRemaining ?? 0,
+      progressPercent: t.progressPercent ?? 0,
+      departureTime: t.departureTime ?? '',
+      estimatedArrival: t.estimatedArrival ?? '',
+      totalDistance: t.totalDistance ?? 0,
+      remainingDistance: t.remainingDistance ?? 0,
+      deliveredCount: t.stopsProgress ?? 0,
+      pendingCount: (t.totalStops ?? 0) - (t.stopsProgress ?? 0),
+      incidentCount: 0,
+      efficiencyPercent: t.totalStops != null && t.totalStops! > 0
+          ? (t.stopsProgress ?? 0) / t.totalStops!
+          : 0,
+    );
+
+    final sessionState = b.resolveState();
+    switch (sessionState) {
+      case DriverSessionState.tripReady:
+        _tripState = TripState.preTrip;
+      case DriverSessionState.tripInProgress:
+        _tripState = TripState.inRoute;
+      case DriverSessionState.deliveryInProgress:
+        _tripState = TripState.delivering;
+        if (b.deliverySession != null) {
+          _restoreDeliverySession(b.deliverySession!);
+        }
+      case DriverSessionState.paused:
+        _tripState = TripState.paused;
+      case DriverSessionState.completed:
+        _tripState = TripState.completed;
+      default:
+        _tripState = TripState.preTrip;
+    }
+
+    _progressAnim = _createProgressAnim(_tripData.progressPercent);
+
+    final newTripId = b.trip?.id;
+    if (newTripId != _lastAppliedTripId) {
+      _lastAppliedTripId = newTripId;
+      _resetDeliveryState();
+    }
   }
 
   void _completeCurrentDelivery() {
@@ -395,16 +429,103 @@ class _DashboardScreenState extends State<DashboardScreen>
       _tripState = tripCompleted ? TripState.completed : TripState.inRoute;
     });
 
-    _progressAnim = Tween<double>(begin: previousProgress, end: newProgress)
-        .animate(CurvedAnimation(
-      parent: _progressAnimation,
-      curve: Curves.easeOutCubic,
-    ));
+    _progressAnim = _createProgressAnim(newProgress, begin: previousProgress);
     _progressAnimation
       ..reset()
       ..forward();
 
     _resetDeliveryState();
+  }
+
+  void _resetDeliveryState() {
+    _deliveryStep = DeliveryStep.confirmArrival;
+    _scannedPackageIds.clear();
+    _signatureStrokes = [];
+    _otpController.clear();
+    _otpFormatValid = false;
+    _otpVerifying = false;
+    _otpVerified = false;
+    _photoTaken = false;
+    _otpAttempts = 0;
+    _currentOutcome = DeliveryOutcome.complete;
+    _incidentReason = null;
+  }
+
+  void _advanceDeliveryStep(StateSetter setModalState) {
+    final steps = DeliveryStep.values;
+    final currentIndex = steps.indexOf(_deliveryStep);
+    if (currentIndex >= steps.length - 1) return;
+
+    final nextStep = steps[currentIndex + 1];
+
+    setState(() {
+      _deliveryStep = nextStep;
+    });
+
+    setModalState(() {});
+  }
+
+  void _setTripState(TripState newState) {
+    setState(() {
+      _tripState = newState;
+    });
+  }
+
+  Animation<double> _createProgressAnim(double end, {double begin = 0}) {
+    return Tween<double>(begin: begin, end: end).animate(
+      CurvedAnimation(parent: _progressAnimation, curve: Curves.easeInOut),
+    );
+  }
+
+  void _restoreDeliverySession(BootstrapDeliverySession session) {
+    _deliveryStep = DeliveryStep.values.firstWhere(
+      (s) => s.name == session.currentStep,
+      orElse: () => DeliveryStep.confirmArrival,
+    );
+    _scannedPackageIds.addAll(session.scannedPackageIds);
+    _photoTaken = session.photoCompleted;
+    _otpVerified = session.otpVerified;
+  }
+
+  ChecklistItem _mapChecklistStatus(BootstrapChecklistItem item) {
+    ChecklistStatus status;
+    switch (item.status) {
+      case 'ok':
+        status = ChecklistStatus.completed;
+      case 'observacion':
+        status = ChecklistStatus.withObservations;
+      case 'fallo':
+        status = ChecklistStatus.inProgress;
+      default:
+        status = ChecklistStatus.pending;
+    }
+    return ChecklistItem(
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      status: status,
+    );
+  }
+
+  List<ChecklistItem> _defaultChecklistItems() {
+    return const [
+      ChecklistItem(id: '1', name: 'Combustible', category: 'Vehículo'),
+      ChecklistItem(id: '2', name: 'Neumáticos', category: 'Vehículo'),
+      ChecklistItem(id: '3', name: 'Luces', category: 'Vehículo'),
+      ChecklistItem(id: '4', name: 'Frenos', category: 'Vehículo'),
+      ChecklistItem(id: '5', name: 'Espejos', category: 'Vehículo'),
+      ChecklistItem(id: '6', name: 'Documentación', category: 'Documentos'),
+      ChecklistItem(id: '7', name: 'Licencia de conducir', category: 'Documentos'),
+      ChecklistItem(id: '8', name: 'Seguro del vehículo', category: 'Documentos'),
+      ChecklistItem(id: '9', name: 'Fotos del vehículo', category: 'Evidencia'),
+      ChecklistItem(id: '10', name: 'Carga asegurada', category: 'Carga'),
+      ChecklistItem(id: '11', name: 'Sellos verificados', category: 'Carga'),
+      ChecklistItem(id: '12', name: 'Temperatura de carga', category: 'Carga'),
+    ];
+  }
+
+  TripData _emptyTripData() {
+    return TripData(etaArrivalTime: DateTime.now());
   }
 
   Future<void> _verifyOtp(StateSetter setModalState) async {
@@ -472,6 +593,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   Widget build(BuildContext context) {
+    final bootstrap = ref.watch(bootstrapProvider);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
@@ -485,24 +607,13 @@ class _DashboardScreenState extends State<DashboardScreen>
               tripState: _tripState,
             ),
             Expanded(
-              child: RefreshIndicator(
-                onRefresh: _refreshData,
-                child: CustomScrollView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  slivers: [
-                    SliverToBoxAdapter(child: _buildHeader(context)),
-                    SliverToBoxAdapter(child: _buildNextStopCard(context)),
-                    if (_tripState == TripState.preTrip)
-                      SliverToBoxAdapter(child: _buildChecklistPrompt(context)),
-                    SliverToBoxAdapter(child: _buildTripProgress(context)),
-                    SliverToBoxAdapter(child: _buildPrimaryAction(context)),
-                    SliverToBoxAdapter(child: _buildQuickActions(context)),
-                    SliverToBoxAdapter(child: _buildKPIs(context)),
-                    SliverToBoxAdapter(child: _buildRecentActivity(context)),
-                    const SliverToBoxAdapter(child: SizedBox(height: 40)),
-                  ],
-                ),
-              ),
+              child: bootstrap == null
+                  ? _buildLoadingScreen()
+                  : !bootstrap.user.active
+                      ? _buildNoTripScreen(context, null)
+                      : bootstrap.trip == null
+                          ? _buildNoTripScreen(context, bootstrap)
+                          : _buildActiveTrip(context),
             ),
           ],
         ),
@@ -510,8 +621,135 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  Future<void> _refreshData() async =>
-      await Future.delayed(const Duration(seconds: 1));
+  Widget _buildLoadingScreen() {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          CircularProgressIndicator(),
+          SizedBox(height: 16),
+          Text('Cargando tu jornada...'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActiveTrip(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: _refreshData,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(child: _buildHeader(context)),
+          SliverToBoxAdapter(child: _buildNextStopCard(context)),
+          if (_tripState == TripState.preTrip)
+            SliverToBoxAdapter(child: _buildChecklistPrompt(context)),
+          SliverToBoxAdapter(child: _buildTripProgress(context)),
+          SliverToBoxAdapter(child: _buildPrimaryAction(context)),
+          SliverToBoxAdapter(child: _buildQuickActions(context)),
+          SliverToBoxAdapter(child: _buildKPIs(context)),
+          SliverToBoxAdapter(child: _buildRecentActivity(context)),
+          const SliverToBoxAdapter(child: SizedBox(height: 40)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoTripScreen(
+      BuildContext context, DriverBootstrap? bootstrap) {
+    final theme = Theme.of(context);
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        _buildHeader(context),
+        const SizedBox(height: 24),
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: theme.colorScheme.outlineVariant),
+          ),
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.grey.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.inbox_outlined,
+                    size: 48, color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Hola ${bootstrap?.user.name ?? ''}',
+                style: const TextStyle(
+                    fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'No tienes viajes asignados actualmente.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Próxima actualización: Hoy, 14:00',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () async {
+                    await _refreshData();
+                    if (mounted) {
+                      ref.read(bootstrapProvider.notifier).loadBootstrap();
+                    }
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('ACTUALIZAR'),
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () {},
+                icon: const Icon(Icons.phone),
+                label: const Text('Contactar soporte'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            _KPICard(value: '--', label: 'Entregados', color: Colors.green),
+            _KPICard(value: '--', label: 'Pendientes', color: Colors.orange),
+            _KPICard(value: '--', label: 'Incidencias', color: Colors.red),
+            _KPICard(
+                value: '--',
+                label: 'Eficiencia',
+                color: theme.colorScheme.primary),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _refreshData() async {
+    try {
+      await ref.read(bootstrapProvider.notifier).loadBootstrap();
+    } catch (_) {
+      // Error handled by provider
+    }
+  }
 
   // ==================== HEADER ====================
 
@@ -532,7 +770,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             radius: 24,
             backgroundColor: theme.colorScheme.primary,
             child: Text(
-              _tripData.driverName[0],
+              _tripData.driverName.isNotEmpty ? _tripData.driverName[0] : '?',
               style: TextStyle(
                 color: theme.colorScheme.onPrimary,
                 fontWeight: FontWeight.bold,

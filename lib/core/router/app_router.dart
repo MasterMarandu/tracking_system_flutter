@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tracking_system_app/core/config/supabase_config.dart';
 import 'package:tracking_system_app/features/authentication/presentation/screens/login_screen.dart';
 import 'package:tracking_system_app/features/authentication/presentation/screens/splash_screen.dart';
 import 'package:tracking_system_app/features/dashboard/presentation/screens/dashboard_screen.dart';
@@ -158,7 +159,20 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
     ],
     redirect: (context, state) {
-      // TODO: Implement auth redirect logic
+      final session = SupabaseConfig.client.auth.currentSession;
+      final isAuthenticated = session != null;
+      final isOnSplash = state.matchedLocation == '/splash';
+
+      if (isOnSplash) return null;
+
+      final isAuthRoute = state.matchedLocation == '/login' ||
+          state.matchedLocation == '/register' ||
+          state.matchedLocation == '/forgot-password';
+
+      if (isAuthenticated && isAuthRoute) {
+        return '/dashboard';
+      }
+
       return null;
     },
     errorBuilder: (context, state) => Scaffold(

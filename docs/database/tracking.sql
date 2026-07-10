@@ -384,6 +384,66 @@ CREATE INDEX idx_checklist_items_estado ON fleet_checklists_items(estado);
 CREATE TRIGGER update_checklist_items_updated_at BEFORE UPDATE ON fleet_checklists_items
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Tabla: plantillas de checklist (items predefinidos por tipo)
+CREATE TABLE fleet_checklists_plantillas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    empresa_id UUID REFERENCES core_empresas(id) ON DELETE CASCADE,
+    tipo VARCHAR(30) NOT NULL CHECK (tipo IN ('pre_viaje', 'post_viaje', 'mantenimiento')),
+    nombre VARCHAR(255) NOT NULL,
+    categoria VARCHAR(100),
+    orden INTEGER DEFAULT 0,
+    es_sistema BOOLEAN DEFAULT FALSE,
+    
+    -- Campos estandar
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID,
+    updated_by UUID,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
+);
+
+CREATE INDEX idx_plantillas_empresa_tipo ON fleet_checklists_plantillas(empresa_id, tipo) WHERE deleted_at IS NULL;
+
+CREATE TRIGGER update_plantillas_updated_at BEFORE UPDATE ON fleet_checklists_plantillas
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Seed: plantillas predefinidas por tipo (empresa_id NULL = global, es_sistema = TRUE)
+INSERT INTO fleet_checklists_plantillas (empresa_id, tipo, nombre, categoria, orden, es_sistema) VALUES
+-- Pre-Viaje
+(NULL, 'pre_viaje', 'Luces', 'Carrocería', 1, TRUE),
+(NULL, 'pre_viaje', 'Frenos', 'Carrocería', 2, TRUE),
+(NULL, 'pre_viaje', 'Espejos', 'Carrocería', 3, TRUE),
+(NULL, 'pre_viaje', 'Documentación', 'Documentos', 4, TRUE),
+(NULL, 'pre_viaje', 'Licencia de conducir', 'Documentos', 5, TRUE),
+(NULL, 'pre_viaje', 'Seguro del vehículo', 'Documentos', 6, TRUE),
+(NULL, 'pre_viaje', 'Fotos del vehículo', 'Evidencia', 7, TRUE),
+(NULL, 'pre_viaje', 'Carga asegurada', 'Carga', 8, TRUE),
+(NULL, 'pre_viaje', 'Sellos verificados', 'Carga', 9, TRUE),
+(NULL, 'pre_viaje', 'Temperatura de carga', 'Carga', 10, TRUE),
+(NULL, 'pre_viaje', 'Neumáticos', 'Carrocería', 11, TRUE),
+(NULL, 'pre_viaje', 'Kilometraje actual', 'Carrocería', 12, TRUE),
+-- Post-Viaje
+(NULL, 'post_viaje', 'Kilometraje final', 'Carrocería', 1, TRUE),
+(NULL, 'post_viaje', 'Estado de neumáticos', 'Carrocería', 2, TRUE),
+(NULL, 'post_viaje', 'Combustible restante', 'Carrocería', 3, TRUE),
+(NULL, 'post_viaje', 'Daños en carrocería', 'Carrocería', 4, TRUE),
+(NULL, 'post_viaje', 'Carga entregada completa', 'Carga', 5, TRUE),
+(NULL, 'post_viaje', 'Sellos retirados', 'Carga', 6, TRUE),
+(NULL, 'post_viaje', 'Documentos de entrega', 'Documentos', 7, TRUE),
+(NULL, 'post_viaje', 'Fotos de entrega', 'Evidencia', 8, TRUE),
+-- Mantenimiento
+(NULL, 'mantenimiento', 'Aceite y filtros', 'Motor', 1, TRUE),
+(NULL, 'mantenimiento', 'Frenos', 'Frenos', 2, TRUE),
+(NULL, 'mantenimiento', 'Neumáticos', 'Neumáticos', 3, TRUE),
+(NULL, 'mantenimiento', 'Luces', 'Luces', 4, TRUE),
+(NULL, 'mantenimiento', 'Suspensión', 'Motor', 5, TRUE),
+(NULL, 'mantenimiento', 'Transmisión', 'Motor', 6, TRUE),
+(NULL, 'mantenimiento', 'Refrigeración', 'Motor', 7, TRUE),
+(NULL, 'mantenimiento', 'Fugas de líquidos', 'Motor', 8, TRUE),
+(NULL, 'mantenimiento', 'Estado de batería', 'Seguridad', 9, TRUE),
+(NULL, 'mantenimiento', 'Documentación al día', 'Documentos', 10, TRUE);
+
 -- ============================================================================
 -- MÓDULO: CUSTOMERS
 -- ============================================================================
@@ -2500,6 +2560,11 @@ CREATE POLICY "Checklists Items de la empresa" ON fleet_checklists_items
             SELECT id FROM fleet_checklists WHERE empresa_id = public.user_empresa_id()
         )
     );
+
+-- Checklists Plantillas: empresa del usuario
+ALTER TABLE fleet_checklists_plantillas ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Checklists Plantillas de la empresa" ON fleet_checklists_plantillas
+    FOR ALL USING (empresa_id = public.user_empresa_id());
 
 -- Asignaciones: empresa del usuario
 ALTER TABLE operations_asignaciones ENABLE ROW LEVEL SECURITY;
