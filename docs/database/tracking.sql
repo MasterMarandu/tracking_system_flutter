@@ -742,7 +742,7 @@ CREATE TRIGGER update_paquetes_cargas_updated_at BEFORE UPDATE ON shipping_paque
 
 -- Tabla: historial_estados
 CREATE TABLE shipping_historial_estados (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID DEFAULT uuid_generate_v4(),
     paquete_id UUID NOT NULL REFERENCES shipping_paquetes(id) ON DELETE CASCADE,
     estado_id UUID NOT NULL REFERENCES shipping_estados_envio(id),
     usuario_id UUID REFERENCES core_usuarios(id),
@@ -750,7 +750,7 @@ CREATE TABLE shipping_historial_estados (
     latitud DECIMAL(10, 8),
     longitud DECIMAL(11, 8),
     ubicacion GEOGRAPHY(POINT, 4326),
-    fecha TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    fecha TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
     
     -- Campos estándar
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -758,7 +758,9 @@ CREATE TABLE shipping_historial_estados (
     created_by UUID,
     updated_by UUID,
     deleted_at TIMESTAMP WITH TIME ZONE,
-    deleted_by UUID
+    deleted_by UUID,
+    
+    PRIMARY KEY (id, fecha)
 ) PARTITION BY RANGE (fecha);
 
 -- Crear particiones mensuales (ejemplo para 2026)
@@ -850,7 +852,7 @@ CREATE TABLE tracking_gps_2026_12 PARTITION OF tracking_gps
 CREATE INDEX idx_gps_viaje ON tracking_gps(viaje_id);
 CREATE INDEX idx_gps_vehiculo ON tracking_gps(vehiculo_id);
 CREATE INDEX idx_gps_conductor ON tracking_gps(conductor_id);
-CREATE INDEX idx_gps_empresa ON tracking_gps(empresa_id);
+CREATE INDEX idx_gps_tracking_empresa ON tracking_gps(empresa_id);
 CREATE INDEX idx_gps_fecha ON tracking_gps(created_at);
 CREATE INDEX idx_gps_ubicacion ON tracking_gps USING GIST(ubicacion);
 CREATE INDEX idx_gps_vehiculo_fecha ON tracking_gps(vehiculo_id, created_at DESC);
@@ -1265,6 +1267,9 @@ CREATE INDEX idx_auditoria_fecha ON audit_auditoria(created_at DESC);
 CREATE INDEX idx_auditoria_antes ON audit_auditoria USING GIN(datos_antes);
 CREATE INDEX idx_auditoria_despues ON audit_auditoria USING GIN(datos_despues);
 
+-- Deshabilitar RLS en audit_auditoria (es una tabla de logs del sistema, no necesita RLS)
+ALTER TABLE audit_auditoria DISABLE ROW LEVEL SECURITY;
+
 -- ============================================================================
 -- MÓDULO: STORAGE
 -- ============================================================================
@@ -1346,7 +1351,6 @@ SELECT DISTINCT ON (vehiculo_id)
     velocidad_kmh,
     created_at
 FROM tracking_gps
-WHERE deleted_at IS NULL
 ORDER BY vehiculo_id, created_at DESC;
 
 -- ============================================================================
@@ -1361,19 +1365,19 @@ DECLARE
     existe BOOLEAN;
 BEGIN
     LOOP
-        nuevo_tracking := 'TRK' || TO_CHAR(NOW(), 'YYYYMMDD') || 
+        nuevo_tracking := 'TRK' || TO_CHAR(NOW(), 'YYYYMMDD') ||
                          LPAD(FLOOR(RANDOM() * 1000000)::TEXT, 6, '0');
-        
+
         SELECT EXISTS(
             SELECT 1 FROM shipping_paquetes WHERE tracking_number = nuevo_tracking
         ) INTO existe;
-        
+
         EXIT WHEN NOT existe;
     END LOOP;
-    
+
     RETURN nuevo_tracking;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Función: calcular distancia entre dos puntos geográficos
 CREATE OR REPLACE FUNCTION calcular_distancia_km(
@@ -1438,7 +1442,7 @@ BEGIN
     
     RETURN COALESCE(NEW, OLD);
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Aplicar trigger a tablas principales (ejemplos)
 CREATE TRIGGER trg_auditoria_paquetes
@@ -1476,14 +1480,11 @@ ALTER TABLE core_empresas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shipping_paquetes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE operations_viajes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tracking_gps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tracking_eventos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tracking_alertas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tracking_sesiones ENABLE ROW LEVEL SECURITY;
 
--- Política ejemplo: usuarios solo ven datos de su empresa
-CREATE POLICY "Usuarios ven solo su empresa" ON core_empresas
-    FOR ALL
-    USING (id IN (
-        SELECT empresa_id FROM core_usuarios 
-        WHERE auth_user_id = auth.uid() AND deleted_at IS NULL
-    ));
+-- Política ELIMINADA - se reemplaza por políticas separadas más adelante
 
 CREATE POLICY "Paquetes de la empresa" ON shipping_paquetes
     FOR ALL
@@ -1493,3 +1494,1053 @@ CREATE POLICY "Paquetes de la empresa" ON shipping_paquetes
     ));
 
 -- Nota: Crear políticas específicas para cada tabla según roles y permisos
+
+-- Habilitar RLS en customers_clientes (si no está ya habilitado)
+ALTER TABLE customers_clientes ENABLE ROW LEVEL SECURITY;
+
+-- Política: usuarios ven y gestionan solo los clientes de su empresa
+CREATE POLICY "Clientes de la empresa" ON customers_clientes
+    FOR ALL
+    USING (empresa_id IN (
+        SELECT empresa_id FROM core_usuarios 
+        WHERE auth_user_id = auth.uid() AND deleted_at IS NULL
+    ))
+    WITH CHECK (empresa_id IN (
+        SELECT empresa_id FROM core_usuarios 
+        WHERE auth_user_id = auth.uid() AND deleted_at IS NULL
+    ));
+
+-- ============================================================================
+-- POLÍTICAS RLS PARA REGISTRO
+-- Permitir que usuarios autenticados creen su empresa y perfil
+-- ============================================================================
+
+-- Helper: función reutilizable para obtener empresa del usuario actual
+CREATE OR REPLACE FUNCTION public.user_empresa_id()
+RETURNS UUID AS $$
+    SELECT empresa_id FROM core_usuarios
+    WHERE auth_user_id = auth.uid() AND deleted_at IS NULL AND activo = TRUE
+    LIMIT 1;
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
+-- Helper: función reutilizable para verificar si usuario es admin
+CREATE OR REPLACE FUNCTION public.user_is_admin()
+RETURNS BOOLEAN AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM core_usuarios u
+        JOIN core_roles r ON u.rol_id = r.id
+        WHERE u.auth_user_id = auth.uid()
+          AND r.nombre = 'Administrador'
+          AND u.deleted_at IS NULL
+          AND u.activo = TRUE
+    );
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
+-- core_empresas: políticas separadas para INSERT y SELECT/UPDATE/DELETE
+-- Limpiar TODAS las políticas existentes primero
+DO $$
+DECLARE
+    pol RECORD;
+BEGIN
+    FOR pol IN SELECT polname FROM pg_policy WHERE polrelid = 'core_empresas'::regclass LOOP
+        EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(pol.polname) || ' ON core_empresas';
+    END LOOP;
+END $$;
+
+-- INSERT: permitir crear empresa durante registro
+CREATE POLICY "Empresas INSERT registro" ON core_empresas
+    FOR INSERT
+    WITH CHECK (true);
+
+-- SELECT: solo ver empresas propias
+CREATE POLICY "Empresas SELECT propia" ON core_empresas
+    FOR SELECT
+    USING (
+        id = public.user_empresa_id()
+    );
+
+-- UPDATE: solo editar empresas propias
+CREATE POLICY "Empresas UPDATE propia" ON core_empresas
+    FOR UPDATE
+    USING (
+        id = public.user_empresa_id()
+    )
+    WITH CHECK (
+        id = public.user_empresa_id()
+    );
+
+-- DELETE: solo eliminar empresas propias
+CREATE POLICY "Empresas DELETE propia" ON core_empresas
+    FOR DELETE
+    USING (
+        id = public.user_empresa_id()
+    );
+
+-- core_usuarios: políticas separadas para evitar recursión infinita
+-- Limpiar TODAS las políticas existentes primero
+DO $$
+DECLARE
+    pol RECORD;
+BEGIN
+    FOR pol IN SELECT polname FROM pg_policy WHERE polrelid = 'core_usuarios'::regclass LOOP
+        EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(pol.polname) || ' ON core_usuarios';
+    END LOOP;
+END $$;
+
+-- INSERT: permitir crear perfil propio (sin consultar la misma tabla)
+CREATE POLICY "Usuarios INSERT propio perfil" ON core_usuarios
+    FOR INSERT
+    WITH CHECK (auth_user_id = auth.uid());
+
+-- SELECT/UPDATE/DELETE: solo ver datos de su empresa
+CREATE POLICY "Usuarios SELECT propia" ON core_usuarios
+    FOR SELECT
+    USING (
+        empresa_id = public.user_empresa_id()
+        OR auth_user_id = auth.uid()
+    );
+
+CREATE POLICY "Usuarios UPDATE propia" ON core_usuarios
+    FOR UPDATE
+    USING (
+        empresa_id = public.user_empresa_id()
+        OR auth_user_id = auth.uid()
+    )
+    WITH CHECK (
+        empresa_id = public.user_empresa_id()
+        OR auth_user_id = auth.uid()
+    );
+
+CREATE POLICY "Usuarios DELETE propia" ON core_usuarios
+    FOR DELETE
+    USING (
+        empresa_id = public.user_empresa_id()
+        OR auth_user_id = auth.uid()
+    );
+
+-- core_roles: lectura para todos los autenticados (catálogo de roles del sistema)
+ALTER TABLE core_roles ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Roles del sistema: lectura" ON core_roles;
+CREATE POLICY "Roles del sistema: lectura" ON core_roles
+    FOR SELECT USING (true);
+
+
+-- ============================================================================
+-- MEJORAS CRÍTICAS PARA PRODUCCIÓN
+-- Ejecutar estas sentencias después del esquema base
+-- ============================================================================
+
+-- ============================================================================
+-- 1. PARTICIONES DEFAULT (evita error al insertar fuera de rango)
+-- ============================================================================
+
+-- Partición default para tracking_gps
+CREATE TABLE tracking_gps_default PARTITION OF tracking_gps DEFAULT;
+
+-- Partición default para tracking_eventos
+CREATE TABLE tracking_eventos_default PARTITION OF tracking_eventos DEFAULT;
+
+-- Partición default para shipping_historial_estados
+CREATE TABLE shipping_historial_estados_default PARTITION OF shipping_historial_estados DEFAULT;
+
+-- Partición default para audit_auditoria
+CREATE TABLE audit_auditoria_default PARTITION OF audit_auditoria DEFAULT;
+
+
+-- ============================================================================
+-- 2. TRIGGERS PARA CALCULAR ubicacion DESDE latitud/longitud
+-- ============================================================================
+
+-- Función genérica para calcular ubicación desde lat/lon
+CREATE OR REPLACE FUNCTION fn_set_ubicacion_from_latlon()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.latitud IS NOT NULL AND NEW.longitud IS NOT NULL THEN
+        NEW.ubicacion := ST_SetSRID(
+            ST_MakePoint(NEW.longitud::double precision, NEW.latitud::double precision),
+            4326
+        )::geography;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Aplicar a todas las tablas con latitud/longitud/ubicacion
+CREATE TRIGGER trg_set_sucursales_ubicacion
+    BEFORE INSERT OR UPDATE OF latitud, longitud ON core_sucursales
+    FOR EACH ROW EXECUTE FUNCTION fn_set_ubicacion_from_latlon();
+
+CREATE TRIGGER trg_set_direcciones_ubicacion
+    BEFORE INSERT OR UPDATE OF latitud, longitud ON customers_direcciones
+    FOR EACH ROW EXECUTE FUNCTION fn_set_ubicacion_from_latlon();
+
+CREATE TRIGGER trg_set_paradas_ubicacion
+    BEFORE INSERT OR UPDATE OF latitud, longitud ON operations_paradas
+    FOR EACH ROW EXECUTE FUNCTION fn_set_ubicacion_from_latlon();
+
+CREATE TRIGGER trg_set_checkpoints_ubicacion
+    BEFORE INSERT OR UPDATE OF latitud, longitud ON operations_checkpoints
+    FOR EACH ROW EXECUTE FUNCTION fn_set_ubicacion_from_latlon();
+
+CREATE TRIGGER trg_set_entregas_ubicacion
+    BEFORE INSERT OR UPDATE OF latitud, longitud ON delivery_entregas
+    FOR EACH ROW EXECUTE FUNCTION fn_set_ubicacion_from_latlon();
+
+CREATE TRIGGER trg_set_incidencias_ubicacion
+    BEFORE INSERT OR UPDATE OF latitud, longitud ON delivery_incidencias
+    FOR EACH ROW EXECUTE FUNCTION fn_set_ubicacion_from_latlon();
+
+CREATE TRIGGER trg_set_historial_ubicacion
+    BEFORE INSERT OR UPDATE OF latitud, longitud ON shipping_historial_estados
+    FOR EACH ROW EXECUTE FUNCTION fn_set_ubicacion_from_latlon();
+
+CREATE TRIGGER trg_set_eventos_ubicacion
+    BEFORE INSERT OR UPDATE OF latitud, longitud ON tracking_eventos
+    FOR EACH ROW EXECUTE FUNCTION fn_set_ubicacion_from_latlon();
+
+
+-- ============================================================================
+-- 3. VALIDACIONES DE LATITUD Y LONGITUD
+-- ============================================================================
+
+-- tracking_gps
+ALTER TABLE tracking_gps
+    ADD CONSTRAINT chk_gps_latitud CHECK (latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_gps_longitud CHECK (longitud BETWEEN -180 AND 180);
+
+-- tracking_eventos
+ALTER TABLE tracking_eventos
+    ADD CONSTRAINT chk_eventos_latitud CHECK (latitud IS NULL OR latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_eventos_longitud CHECK (longitud IS NULL OR longitud BETWEEN -180 AND 180);
+
+-- operations_paradas
+ALTER TABLE operations_paradas
+    ADD CONSTRAINT chk_paradas_latitud CHECK (latitud IS NULL OR latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_paradas_longitud CHECK (longitud IS NULL OR longitud BETWEEN -180 AND 180);
+
+-- operations_checkpoints
+ALTER TABLE operations_checkpoints
+    ADD CONSTRAINT chk_checkpoints_latitud CHECK (latitud IS NULL OR latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_checkpoints_longitud CHECK (longitud IS NULL OR longitud BETWEEN -180 AND 180);
+
+-- delivery_entregas
+ALTER TABLE delivery_entregas
+    ADD CONSTRAINT chk_entregas_latitud CHECK (latitud IS NULL OR latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_entregas_longitud CHECK (longitud IS NULL OR longitud BETWEEN -180 AND 180);
+
+-- delivery_incidencias
+ALTER TABLE delivery_incidencias
+    ADD CONSTRAINT chk_incidencias_latitud CHECK (latitud IS NULL OR latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_incidencias_longitud CHECK (longitud IS NULL OR longitud BETWEEN -180 AND 180);
+
+-- core_sucursales
+ALTER TABLE core_sucursales
+    ADD CONSTRAINT chk_sucursales_latitud CHECK (latitud IS NULL OR latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_sucursales_longitud CHECK (longitud IS NULL OR longitud BETWEEN -180 AND 180);
+
+-- customers_direcciones
+ALTER TABLE customers_direcciones
+    ADD CONSTRAINT chk_direcciones_latitud CHECK (latitud IS NULL OR latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_direcciones_longitud CHECK (longitud IS NULL OR longitud BETWEEN -180 AND 180);
+
+-- shipping_historial_estados
+ALTER TABLE shipping_historial_estados
+    ADD CONSTRAINT chk_historial_latitud CHECK (latitud IS NULL OR latitud BETWEEN -90 AND 90),
+    ADD CONSTRAINT chk_historial_longitud CHECK (longitud IS NULL OR longitud BETWEEN -180 AND 180);
+
+
+-- ============================================================================
+-- 4. FUNCIÓN DE AUDITORÍA CORREGIDA (maneja DELETE correctamente)
+-- ============================================================================
+
+-- Eliminar trigger existente si lo hay
+DROP TRIGGER IF EXISTS trg_auditoria_paquetes ON shipping_paquetes;
+DROP TRIGGER IF EXISTS trg_auditoria_viajes ON operations_viajes;
+DROP TRIGGER IF EXISTS trg_auditoria_entregas ON delivery_entregas;
+
+-- Reemplazar la función de auditoría con una versión corregida
+CREATE OR REPLACE FUNCTION fn_auditoria_general()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_empresa_id UUID;
+    v_usuario_id UUID;
+    v_registro_id UUID;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        v_empresa_id := NEW.empresa_id;
+        v_usuario_id := NEW.created_by;
+        v_registro_id := NEW.id;
+
+        INSERT INTO audit_auditoria (
+            empresa_id, usuario_id, accion, tabla_afectada,
+            registro_id, datos_antes, datos_despues
+        ) VALUES (
+            v_empresa_id, v_usuario_id, 'INSERT', TG_TABLE_NAME,
+            v_registro_id, NULL, to_jsonb(NEW)
+        );
+
+        RETURN NEW;
+
+    ELSIF TG_OP = 'UPDATE' THEN
+        v_empresa_id := COALESCE(NEW.empresa_id, OLD.empresa_id);
+        v_usuario_id := COALESCE(NEW.updated_by, OLD.updated_by);
+        v_registro_id := NEW.id;
+
+        INSERT INTO audit_auditoria (
+            empresa_id, usuario_id, accion, tabla_afectada,
+            registro_id, datos_antes, datos_despues
+        ) VALUES (
+            v_empresa_id, v_usuario_id, 'UPDATE', TG_TABLE_NAME,
+            v_registro_id, to_jsonb(OLD), to_jsonb(NEW)
+        );
+
+        RETURN NEW;
+
+    ELSIF TG_OP = 'DELETE' THEN
+        v_empresa_id := OLD.empresa_id;
+        v_usuario_id := OLD.updated_by;
+        v_registro_id := OLD.id;
+
+        INSERT INTO audit_auditoria (
+            empresa_id, usuario_id, accion, tabla_afectada,
+            registro_id, datos_antes, datos_despues
+        ) VALUES (
+            v_empresa_id, v_usuario_id, 'DELETE', TG_TABLE_NAME,
+            v_registro_id, to_jsonb(OLD), NULL
+        );
+
+        RETURN OLD;
+    END IF;
+
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Re-crear triggers de auditoría
+CREATE TRIGGER trg_auditoria_paquetes
+    AFTER INSERT OR UPDATE OR DELETE ON shipping_paquetes
+    FOR EACH ROW EXECUTE FUNCTION fn_auditoria_general();
+
+CREATE TRIGGER trg_auditoria_viajes
+    AFTER INSERT OR UPDATE OR DELETE ON operations_viajes
+    FOR EACH ROW EXECUTE FUNCTION fn_auditoria_general();
+
+CREATE TRIGGER trg_auditoria_entregas
+    AFTER INSERT OR UPDATE OR DELETE ON delivery_entregas
+    FOR EACH ROW EXECUTE FUNCTION fn_auditoria_general();
+
+
+-- ============================================================================
+-- 5. POLÍTICAS RLS COMPLETAS PARA TODAS LAS TABLAS PRINCIPALES
+-- ============================================================================
+
+-- Habilitar RLS en tablas principales que no lo tienen
+ALTER TABLE customers_direcciones ENABLE ROW LEVEL SECURITY;
+ALTER TABLE customers_remitentes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE customers_destinatarios ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fleet_vehiculos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fleet_conductores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fleet_dispositivos_gps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operations_rutas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operations_paradas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operations_geocercas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE operations_checkpoints ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shipping_cargas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shipping_estados_envio ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delivery_entregas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delivery_incidencias ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delivery_firmas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delivery_fotografias ENABLE ROW LEVEL SECURITY;
+ALTER TABLE communication_chats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE communication_chat_mensajes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE communication_notificaciones ENABLE ROW LEVEL SECURITY;
+ALTER TABLE storage_documentos ENABLE ROW LEVEL SECURITY;
+
+-- Direcciones: solo empresa del usuario
+CREATE POLICY "Direcciones de la empresa" ON customers_direcciones
+    FOR ALL USING (
+        cliente_id IN (
+            SELECT id FROM customers_clientes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Remitentes: solo empresa del usuario
+CREATE POLICY "Remitentes de la empresa" ON customers_remitentes
+    FOR ALL USING (
+        cliente_id IN (
+            SELECT id FROM customers_clientes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Destinatarios: solo empresa del usuario
+CREATE POLICY "Destinatarios de la empresa" ON customers_destinatarios
+    FOR ALL USING (
+        cliente_id IN (
+            SELECT id FROM customers_clientes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Vehículos: empresa del usuario
+CREATE POLICY "Vehículos de la empresa" ON fleet_vehiculos
+    FOR ALL USING (empresa_id = public.user_empresa_id())
+    WITH CHECK (empresa_id = public.user_empresa_id() OR empresa_id IS NULL);
+
+-- Conductores: empresa del usuario
+CREATE POLICY "Conductores de la empresa" ON fleet_conductores
+    FOR ALL USING (empresa_id = public.user_empresa_id())
+    WITH CHECK (empresa_id = public.user_empresa_id() OR empresa_id IS NULL);
+
+-- Remolques: empresa del usuario
+DROP POLICY IF EXISTS "Remolques de la empresa" ON fleet_remolques;
+CREATE POLICY "Remolques de la empresa" ON fleet_remolques
+    FOR ALL USING (empresa_id = public.user_empresa_id())
+    WITH CHECK (empresa_id = public.user_empresa_id() OR empresa_id IS NULL);
+
+-- Habilitar RLS en fleet_remolques
+ALTER TABLE fleet_remolques ENABLE ROW LEVEL SECURITY;
+
+-- Dispositivos GPS: empresa del usuario
+CREATE POLICY "Dispositivos GPS de la empresa" ON fleet_dispositivos_gps
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Rutas: empresa del usuario
+CREATE POLICY "Rutas de la empresa" ON operations_rutas
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Paradas: empresa del usuario (a través de ruta)
+CREATE POLICY "Paradas de la empresa" ON operations_paradas
+    FOR ALL USING (
+        ruta_id IN (
+            SELECT id FROM operations_rutas WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Geocercas: empresa del usuario
+CREATE POLICY "Geocercas de la empresa" ON operations_geocercas
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Checkpoints: empresa del usuario (a través de viaje)
+CREATE POLICY "Checkpoints de la empresa" ON operations_checkpoints
+    FOR ALL USING (
+        viaje_id IN (
+            SELECT id FROM operations_viajes WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Viajes: empresa del usuario
+CREATE POLICY "Viajes de la empresa" ON operations_viajes
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Cargas: empresa del usuario
+CREATE POLICY "Cargas de la empresa" ON shipping_cargas
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Estados de envío: lectura para todos los autenticados (catálogo global)
+CREATE POLICY "Estados de envío: lectura" ON shipping_estados_envio
+    FOR SELECT USING (TRUE);
+
+-- GPS: empresa del usuario (solo SELECT para no sobrecargar)
+CREATE POLICY "GPS de la empresa" ON tracking_gps
+    FOR SELECT USING (empresa_id = public.user_empresa_id());
+
+-- Eventos: empresa del usuario
+CREATE POLICY "Eventos de la empresa" ON tracking_eventos
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Alertas: empresa del usuario
+CREATE POLICY "Alertas de la empresa" ON tracking_alertas
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Sesiones: empresa del usuario
+CREATE POLICY "Sesiones de la empresa" ON tracking_sesiones
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Entregas: empresa del usuario
+CREATE POLICY "Entregas de la empresa" ON delivery_entregas
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Incidencias: empresa del usuario
+CREATE POLICY "Incidencias de la empresa" ON delivery_incidencias
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Firmas: empresa del usuario
+CREATE POLICY "Firmas de la empresa" ON delivery_firmas
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Fotografías: empresa del usuario
+CREATE POLICY "Fotografías de la empresa" ON delivery_fotografias
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Chats: empresa del usuario
+CREATE POLICY "Chats de la empresa" ON communication_chats
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+-- Mensajes: empresa del usuario (a través de chat)
+CREATE POLICY "Mensajes de la empresa" ON communication_chat_mensajes
+    FOR ALL USING (
+        chat_id IN (
+            SELECT id FROM communication_chats WHERE empresa_id = public.user_empresa_id()
+        )
+    );
+
+-- Notificaciones: solo el propio usuario
+CREATE POLICY "Mis notificaciones" ON communication_notificaciones
+    FOR ALL USING (usuario_id IN (
+        SELECT id FROM core_usuarios WHERE auth_user_id = auth.uid()
+    ));
+
+-- Documentos: empresa del usuario
+CREATE POLICY "Documentos de la empresa" ON storage_documentos
+    FOR ALL USING (empresa_id = public.user_empresa_id());
+
+
+-- ============================================================================
+-- 6. CONSTRAINT LÓGICA PARA GEOCERCAS (circulo vs poligono)
+-- ============================================================================
+
+ALTER TABLE operations_geocercas
+    ADD CONSTRAINT chk_geocerca_tipo_geometry
+    CHECK (
+        (
+            tipo = 'circulo'
+            AND centro IS NOT NULL
+            AND radio IS NOT NULL
+            AND radio > 0
+            AND poligono IS NULL
+        )
+        OR
+        (
+            tipo = 'poligono'
+            AND poligono IS NOT NULL
+            AND centro IS NULL
+            AND radio IS NULL
+        )
+    );
+
+
+-- ============================================================================
+-- 7. TABLA DE ÚLTIMA POSICIÓN GPS (rendimiento para mapa en vivo)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS tracking_ultima_posicion (
+    vehiculo_id UUID PRIMARY KEY,
+    empresa_id UUID NOT NULL,
+    viaje_id UUID,
+    conductor_id UUID,
+    dispositivo_id UUID,
+    latitud DECIMAL(10, 8) NOT NULL,
+    longitud DECIMAL(11, 8) NOT NULL,
+    ubicacion GEOGRAPHY(POINT, 4326) NOT NULL,
+    precision_m DECIMAL(5, 2),
+    velocidad_kmh DECIMAL(6, 2),
+    rumbo DECIMAL(5, 2),
+    bateria INTEGER CHECK (bateria >= 0 AND bateria <= 100),
+    internet BOOLEAN,
+    gps BOOLEAN,
+    satelites INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_ultima_posicion_empresa ON tracking_ultima_posicion(empresa_id);
+CREATE INDEX idx_ultima_posicion_ubicacion ON tracking_ultima_posicion USING GIST(ubicacion);
+
+-- Deshabilitar RLS (tabla de cache del sistema, el trigger la actualiza)
+ALTER TABLE tracking_ultima_posicion DISABLE ROW LEVEL SECURITY;
+
+-- Trigger para mantener actualizada la última posición GPS
+CREATE OR REPLACE FUNCTION fn_update_ultima_posicion()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.vehiculo_id IS NOT NULL THEN
+        INSERT INTO tracking_ultima_posicion (
+            vehiculo_id, empresa_id, viaje_id, conductor_id, dispositivo_id,
+            latitud, longitud, ubicacion, precision_m, velocidad_kmh, rumbo,
+            bateria, internet, gps, satelites, created_at, updated_at
+        ) VALUES (
+            NEW.vehiculo_id, NEW.empresa_id, NEW.viaje_id, NEW.conductor_id, NEW.dispositivo_id,
+            NEW.latitud, NEW.longitud, NEW.ubicacion, NEW.precision_m, NEW.velocidad_kmh, NEW.rumbo,
+            NEW.bateria, NEW.internet, NEW.gps, NEW.satelites, NEW.created_at, NOW()
+        )
+        ON CONFLICT (vehiculo_id) DO UPDATE SET
+            viaje_id = EXCLUDED.viaje_id,
+            conductor_id = EXCLUDED.conductor_id,
+            dispositivo_id = EXCLUDED.dispositivo_id,
+            latitud = EXCLUDED.latitud,
+            longitud = EXCLUDED.longitud,
+            ubicacion = EXCLUDED.ubicacion,
+            precision_m = EXCLUDED.precision_m,
+            velocidad_kmh = EXCLUDED.velocidad_kmh,
+            rumbo = EXCLUDED.rumbo,
+            bateria = EXCLUDED.bateria,
+            internet = EXCLUDED.internet,
+            gps = EXCLUDED.gps,
+            satelites = EXCLUDED.satelites,
+            created_at = EXCLUDED.created_at,
+            updated_at = NOW();
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER trg_update_ultima_posicion
+    AFTER INSERT ON tracking_gps
+    FOR EACH ROW EXECUTE FUNCTION fn_update_ultima_posicion();
+
+
+-- ============================================================================
+-- 8. RESTRICCIONES UNIQUE POR EMPRESA (soft delete safe)
+-- ============================================================================
+
+-- Eliminar constraints UNIQUE globales problemáticos y reemplazar con índices parciales
+-- Nota: Ejecutar solo si los constraints UNIQUE actuales causan problemas con soft delete
+
+-- fleet_vehiculos: matrícula única por empresa (solo activos)
+DROP INDEX IF EXISTS idx_vehiculos_matricula;
+CREATE UNIQUE INDEX uq_vehiculos_empresa_matricula_activa
+    ON fleet_vehiculos(empresa_id, matricula)
+    WHERE deleted_at IS NULL;
+
+-- operations_rutas: código único por empresa (solo activas)
+DROP INDEX IF EXISTS idx_rutas_codigo;
+CREATE UNIQUE INDEX uq_rutas_empresa_codigo_activa
+    ON operations_rutas(empresa_id, codigo)
+    WHERE deleted_at IS NULL AND codigo IS NOT NULL;
+
+-- operations_viajes: código único por empresa (solo activos)
+DROP INDEX IF EXISTS idx_viajes_codigo;
+CREATE UNIQUE INDEX uq_viajes_empresa_codigo_activo
+    ON operations_viajes(empresa_id, codigo)
+    WHERE deleted_at IS NULL;
+
+-- shipping_cargas: código único por empresa (solo activas)
+DROP INDEX IF EXISTS idx_cargas_codigo;
+CREATE UNIQUE INDEX uq_cargas_empresa_codigo_activa
+    ON shipping_cargas(empresa_id, codigo)
+    WHERE deleted_at IS NULL;
+
+-- fleet_dispositivos_gps: IMEI único global (nunca se reutiliza)
+-- Se mantiene UNIQUE global porque un IMEI no debería existir en dos empresas
+
+
+-- ============================================================================
+-- 9. VISTAS CON SECURITY INVOKER (respetan RLS)
+-- ============================================================================
+
+-- Eliminar vistas existentes y recrearlas con security_invoker
+DROP VIEW IF EXISTS v_paquetes_completo;
+DROP VIEW IF EXISTS v_viajes_activos;
+DROP VIEW IF EXISTS v_ultima_posicion_gps;
+
+-- Vista: paquetes con toda la información
+CREATE VIEW v_paquetes_completo
+WITH (security_invoker = true)
+AS
+SELECT 
+    p.*,
+    c.nombre AS cliente_nombre,
+    e.nombre AS estado_nombre,
+    e.color AS estado_color,
+    r.nombre AS remitente_nombre,
+    d.nombre AS destinatario_nombre
+FROM shipping_paquetes p
+LEFT JOIN customers_clientes c ON p.cliente_id = c.id
+LEFT JOIN shipping_estados_envio e ON p.estado_actual = e.id
+LEFT JOIN customers_remitentes r ON p.remitente_id = r.id
+LEFT JOIN customers_destinatarios d ON p.destinatario_id = d.id
+WHERE p.deleted_at IS NULL;
+
+-- Vista: viajes activos con información del conductor y vehículo
+CREATE VIEW v_viajes_activos
+WITH (security_invoker = true)
+AS
+SELECT 
+    v.*,
+    cond.nombre || ' ' || cond.apellido AS conductor_nombre,
+    cond.telefono AS conductor_telefono,
+    veh.matricula,
+    veh.marca || ' ' || veh.modelo AS vehiculo_descripcion,
+    r.nombre AS ruta_nombre
+FROM operations_viajes v
+LEFT JOIN fleet_conductores fc ON v.conductor_id = fc.id
+LEFT JOIN core_usuarios cond ON fc.usuario_id = cond.id
+LEFT JOIN fleet_vehiculos veh ON v.vehiculo_id = veh.id
+LEFT JOIN operations_rutas r ON v.ruta_id = r.id
+WHERE v.deleted_at IS NULL
+    AND v.estado IN ('programado', 'en_curso');
+
+-- Vista: última posición GPS de cada vehículo (ahora usa la tabla materializada)
+CREATE VIEW v_ultima_posicion_gps
+WITH (security_invoker = true)
+AS
+SELECT
+    vehiculo_id,
+    empresa_id,
+    viaje_id,
+    conductor_id,
+    latitud,
+    longitud,
+    velocidad_kmh,
+    bateria,
+    internet,
+    gps,
+    created_at
+FROM tracking_ultima_posicion;
+
+
+-- ============================================================================
+-- 10. FUNCIÓN PARA AUTO-GENERAR CÓDIGOS POR EMPRESA
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION generar_codigo_empresa(
+    p_tabla TEXT,
+    p_empresa_id UUID,
+    p_prefijo TEXT DEFAULT ''
+) RETURNS TEXT AS $$
+DECLARE
+    v_codigo TEXT;
+    v_existe BOOLEAN;
+    v_counter INTEGER := 1;
+BEGIN
+    LOOP
+        v_codigo := p_prefijo || LPAD(v_counter::TEXT, 4, '0');
+
+        IF p_tabla = 'operations_rutas' THEN
+            SELECT EXISTS(SELECT 1 FROM operations_rutas WHERE empresa_id = p_empresa_id AND codigo = v_codigo AND deleted_at IS NULL) INTO v_existe;
+        ELSIF p_tabla = 'operations_viajes' THEN
+            SELECT EXISTS(SELECT 1 FROM operations_viajes WHERE empresa_id = p_empresa_id AND codigo = v_codigo AND deleted_at IS NULL) INTO v_existe;
+        ELSIF p_tabla = 'shipping_cargas' THEN
+            SELECT EXISTS(SELECT 1 FROM shipping_cargas WHERE empresa_id = p_empresa_id AND codigo = v_codigo AND deleted_at IS NULL) INTO v_existe;
+        ELSE
+            v_existe := FALSE;
+        END IF;
+
+        EXIT WHEN NOT v_existe;
+        v_counter := v_counter + 1;
+    END LOOP;
+
+    RETURN v_codigo;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- ============================================================================
+-- FIN DE MEJORAS CRÍTICAS
+-- ============================================================================
+
+
+-- ============================================================================
+-- FUNCIÓN: REGISTRO COMPLETO DE EMPRESA + USUARIO
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.registrar_empresa_usuario(
+    p_auth_user_id UUID,
+    p_email VARCHAR,
+    p_nombre VARCHAR,
+    p_apellido VARCHAR,
+    p_telefono VARCHAR DEFAULT NULL,
+    p_rol_nombre VARCHAR DEFAULT 'Administrador',
+    p_mode VARCHAR DEFAULT 'new_company',
+    p_company_name VARCHAR DEFAULT NULL,
+    p_company_ruc VARCHAR DEFAULT NULL,
+    p_invite_code VARCHAR DEFAULT NULL
+)
+RETURNS TABLE (
+    success BOOLEAN,
+    empresa_id UUID,
+    usuario_id UUID,
+    message TEXT
+) AS $$
+DECLARE
+    v_empresa_id UUID;
+    v_usuario_id UUID;
+    v_rol_id UUID;
+    v_existe_empresa BOOLEAN;
+BEGIN
+    -- Validar parámetros básicos
+    IF p_auth_user_id IS NULL OR p_email IS NULL OR p_nombre IS NULL OR p_apellido IS NULL THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, 'Faltan campos obligatorios';
+        RETURN;
+    END IF;
+
+    -- Obtener el rol
+    SELECT id INTO v_rol_id
+    FROM core_roles
+    WHERE nombre = p_rol_nombre AND es_sistema = TRUE
+    LIMIT 1;
+
+    -- Manejar según el modo
+    IF p_mode = 'new_company' THEN
+        IF p_company_name IS NULL THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, 'Nombre de empresa es obligatorio';
+            RETURN;
+        END IF;
+
+        -- Crear empresa
+        INSERT INTO core_empresas (nombre, ruc, email, estado)
+        VALUES (p_company_name, p_company_ruc, p_email, 'activo')
+        RETURNING id INTO v_empresa_id;
+
+    ELSIF p_mode = 'join_company' THEN
+        IF p_invite_code IS NULL THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, 'Código de invitación requerido';
+            RETURN;
+        END IF;
+
+        -- Buscar empresa por RUC
+        SELECT id INTO v_empresa_id
+        FROM core_empresas
+        WHERE ruc = p_invite_code
+          AND estado = 'activo'
+          AND deleted_at IS NULL
+        LIMIT 1;
+
+        IF v_empresa_id IS NULL THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, 'Código de invitación no válido';
+            RETURN;
+        END IF;
+    ELSE
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, 'Modo inválido';
+        RETURN;
+    END IF;
+
+    -- Crear usuario
+    INSERT INTO core_usuarios (
+        auth_user_id, empresa_id, rol_id, nombre, apellido, email, telefono, activo
+    )
+    VALUES (
+        p_auth_user_id, v_empresa_id, v_rol_id, p_nombre, p_apellido, p_email, p_telefono, TRUE
+    )
+    RETURNING id INTO v_usuario_id;
+
+    RETURN QUERY SELECT TRUE, v_empresa_id, v_usuario_id, 'Registro exitoso';
+
+EXCEPTION WHEN OTHERS THEN
+    RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, SQLERRM;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Otorgar permisos de ejecución
+GRANT EXECUTE ON FUNCTION public.registrar_empresa_usuario TO anon, authenticated, service_role;
+
+
+-- ============================================================================
+-- FUNCIÓN: REGISTRO DE CONDUCTOR CON CUENTA DE USUARIO
+-- Crea un conductor en fleet_conductores y su cuenta de usuario en core_usuarios
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.registrar_conductor(
+    p_empresa_id UUID,
+    p_nombre VARCHAR,
+    p_apellido VARCHAR,
+    p_email VARCHAR,
+    p_password VARCHAR,
+    p_licencia VARCHAR,
+    p_telefono VARCHAR DEFAULT NULL,
+    p_tipo_licencia VARCHAR DEFAULT NULL,
+    p_vencimiento_licencia DATE DEFAULT NULL,
+    p_auth_user_id UUID DEFAULT NULL
+)
+RETURNS TABLE (
+    success BOOLEAN,
+    conductor_id UUID,
+    usuario_id UUID,
+    auth_user_id UUID,
+    message TEXT
+) AS $$
+DECLARE
+    v_conductor_id UUID;
+    v_usuario_id UUID;
+    v_auth_user_id UUID;
+    v_rol_id UUID;
+    v_existe_conductor BOOLEAN;
+    v_existe_usuario BOOLEAN;
+BEGIN
+    -- Validar parámetros básicos
+    IF p_empresa_id IS NULL OR p_nombre IS NULL OR p_apellido IS NULL OR p_email IS NULL OR p_licencia IS NULL THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, NULL::UUID, 'Faltan campos obligatorios';
+        RETURN;
+    END IF;
+
+    -- Verificar si el conductor ya existe (por licencia y empresa)
+    SELECT EXISTS(
+        SELECT 1 FROM fleet_conductores
+        WHERE empresa_id = p_empresa_id AND licencia = p_licencia AND deleted_at IS NULL
+    ) INTO v_existe_conductor;
+
+    IF v_existe_conductor THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, NULL::UUID, 'Ya existe un conductor con esa licencia';
+        RETURN;
+    END IF;
+
+    -- Obtener el rol de Chofer
+    SELECT id INTO v_rol_id
+    FROM core_roles
+    WHERE nombre = 'Chofer' AND es_sistema = TRUE
+    LIMIT 1;
+
+    -- Verificar si el email ya existe en core_usuarios
+    SELECT EXISTS(
+        SELECT 1 FROM core_usuarios WHERE email = p_email AND deleted_at IS NULL
+    ) INTO v_existe_usuario;
+
+    IF v_existe_usuario THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, NULL::UUID, 'Ya existe un usuario con ese email';
+        RETURN;
+    END IF;
+
+    -- Si no se proporcionó auth_user_id, retornar error (el cliente debe crear el auth user primero)
+    IF p_auth_user_id IS NULL THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, NULL::UUID, 'Se requiere auth_user_id (crear usuario en auth.users primero)';
+        RETURN;
+    END IF;
+
+    v_auth_user_id := p_auth_user_id;
+
+    -- Crear conductor
+    INSERT INTO fleet_conductores (
+        empresa_id, licencia, tipo_licencia, vencimiento_licencia, telefono, estado
+    )
+    VALUES (
+        p_empresa_id, p_licencia, p_tipo_licencia, p_vencimiento_licencia, p_telefono, 'disponible'
+    )
+    RETURNING id INTO v_conductor_id;
+
+    -- Crear usuario
+    INSERT INTO core_usuarios (
+        auth_user_id, empresa_id, rol_id, nombre, apellido, email, telefono, activo
+    )
+    VALUES (
+        v_auth_user_id, p_empresa_id, v_rol_id, p_nombre, p_apellido, p_email, p_telefono, TRUE
+    )
+    RETURNING id INTO v_usuario_id;
+
+    -- Asociar el usuario al conductor
+    UPDATE fleet_conductores
+    SET usuario_id = v_usuario_id
+    WHERE id = v_conductor_id;
+
+    RETURN QUERY SELECT TRUE, v_conductor_id, v_usuario_id, v_auth_user_id, 'Conductor registrado exitosamente';
+
+EXCEPTION WHEN OTHERS THEN
+    RETURN QUERY SELECT FALSE, NULL::UUID, NULL::UUID, NULL::UUID, SQLERRM;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION public.registrar_conductor TO anon, authenticated, service_role;
+
+
+-- ============================================================================
+-- FUNCIÓN: CREAR/ACTUALIZAR GEOCERCA
+-- Maneja la conversión de coordenadas a geography/geometry PostGIS
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.guardar_geocerca(
+    p_id UUID DEFAULT NULL,
+    p_empresa_id UUID DEFAULT NULL,
+    p_nombre VARCHAR DEFAULT NULL,
+    p_tipo VARCHAR DEFAULT 'circulo',
+    p_latitud DOUBLE PRECISION DEFAULT NULL,
+    p_longitud DOUBLE PRECISION DEFAULT NULL,
+    p_radio INTEGER DEFAULT NULL,
+    p_color VARCHAR DEFAULT '#3B82F6',
+    p_activa BOOLEAN DEFAULT TRUE,
+    p_poligono JSONB DEFAULT NULL
+)
+RETURNS TABLE (
+    success BOOLEAN,
+    geocerca_id UUID,
+    message TEXT
+) AS $$
+DECLARE
+    v_geocerca_id UUID;
+    v_centro GEOGRAPHY;
+    v_poligono_geom GEOMETRY(POLYGON, 4326);
+BEGIN
+    -- Validar parámetros
+    IF p_nombre IS NULL OR p_nombre = '' THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, 'El nombre es obligatorio';
+        RETURN;
+    END IF;
+
+    IF p_tipo NOT IN ('circulo', 'poligono') THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, 'Tipo de geocerca inválido';
+        RETURN;
+    END IF;
+
+    -- Crear el punto geográfico desde latitud/longitud
+    IF p_latitud IS NOT NULL AND p_longitud IS NOT NULL THEN
+        v_centro := ST_SetSRID(ST_MakePoint(p_longitud, p_latitud), 4326)::geography;
+    END IF;
+
+    -- Crear el polígono si se proporcionó
+    IF p_tipo = 'poligono' AND p_poligono IS NOT NULL THEN
+        -- p_poligono debe ser un array de coordenadas [[lng, lat], [lng, lat], ...]
+        v_poligono_geom := ST_SetSRID(
+            ST_GeomFromText(
+                'POLYGON((' || (
+                    SELECT string_agg(lng || ' ' || lat, ', ')
+                    FROM jsonb_array_elements(p_poligono->'coordinates'->0) AS coord
+                    CROSS JOIN LATERAL (
+                        SELECT (coord->>0)::double precision AS lng,
+                               (coord->>1)::double precision AS lat
+                    ) AS p
+                ) || ', ' || (
+                    SELECT (coord->>0)::double precision || ' ' || (coord->>1)::double precision
+                    FROM jsonb_array_elements(p_poligono->'coordinates'->0) AS coord
+                    LIMIT 1
+                ) || '))'
+            ),
+            4326
+        );
+    END IF;
+
+    -- Si es UPDATE
+    IF p_id IS NOT NULL THEN
+        UPDATE operations_geocercas
+        SET
+            nombre = p_nombre,
+            tipo = p_tipo,
+            radio = CASE WHEN p_tipo = 'circulo' THEN p_radio ELSE NULL END,
+            poligono = CASE WHEN p_tipo = 'poligono' THEN v_poligono_geom ELSE NULL END,
+            centro = COALESCE(v_centro, centro),
+            color = p_color,
+            activa = p_activa,
+            updated_at = NOW()
+        WHERE id = p_id
+        RETURNING id INTO v_geocerca_id;
+
+        IF v_geocerca_id IS NULL THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'Geocerca no encontrada';
+            RETURN;
+        END IF;
+
+        RETURN QUERY SELECT TRUE, v_geocerca_id, 'Geocerca actualizada correctamente';
+        RETURN;
+    END IF;
+
+    -- Si es INSERT
+    IF p_empresa_id IS NULL THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, 'empresa_id es obligatorio para crear';
+        RETURN;
+    END IF;
+
+    INSERT INTO operations_geocercas (
+        empresa_id, nombre, tipo, radio, poligono, centro, color, activa
+    )
+    VALUES (
+        p_empresa_id, p_nombre, p_tipo,
+        CASE WHEN p_tipo = 'circulo' THEN p_radio ELSE NULL END,
+        CASE WHEN p_tipo = 'poligono' THEN v_poligono_geom ELSE NULL END,
+        v_centro, p_color, p_activa
+    )
+    RETURNING id INTO v_geocerca_id;
+
+    RETURN QUERY SELECT TRUE, v_geocerca_id, 'Geocerca creada correctamente';
+
+EXCEPTION WHEN OTHERS THEN
+    RETURN QUERY SELECT FALSE, NULL::UUID, SQLERRM;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION public.guardar_geocerca TO anon, authenticated, service_role;
