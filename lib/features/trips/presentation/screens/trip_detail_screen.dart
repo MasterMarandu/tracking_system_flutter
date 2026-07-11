@@ -76,6 +76,11 @@ class TripDetail {
     this.estimatedArrival,
     required this.stopsList,
   });
+
+  double get progress =>
+      stops > 0 ? (completedStops / stops).clamp(0.0, 1.0) : 0.0;
+  int get packagesDelivered =>
+      (packages - packagesRemaining).clamp(0, packages);
 }
 
 // ==================== REPOSITORY ====================
@@ -86,17 +91,11 @@ class TripDetailRepository {
   TripDetailRepository(this._client);
 
   Future<TripDetail> fetchTripDetail(String tripId) async {
-    // 1. Obtener el viaje con sus relaciones
     final viajeResult = await _client
         .from('operations_viajes')
         .select('''
-          id,
-          codigo,
-          estado,
-          hora_real_salida,
-          hora_programada_llegada,
-          km_estimados,
-          distancia_real_km,
+          id, codigo, estado, hora_real_salida, hora_programada_llegada,
+          km_estimados, distancia_real_km,
           operations_rutas (origen, destino, nombre),
           operations_viajes_vehiculos (
             fleet_vehiculos (matricula, marca, modelo)
@@ -106,33 +105,26 @@ class TripDetailRepository {
         .filter('deleted_at', 'is', null)
         .maybeSingle();
 
-    if (viajeResult == null) {
-      throw Exception('Viaje no encontrado');
-    }
+    if (viajeResult == null) throw Exception('Viaje no encontrado');
 
     final viaje = viajeResult;
 
-    // 2. Obtener checkpoints
     final checkpoints = await _client
         .from('operations_checkpoints')
         .select('''
-          id,
-          estado,
-          parada_id,
+          id, estado, parada_id,
           operations_paradas (nombre, direccion, latitud, longitud, orden, eta_minutos)
         ''')
         .eq('viaje_id', tripId)
         .filter('deleted_at', 'is', null)
         .order('created_at', ascending: true);
 
-    // 3. Obtener paquetes
     final paquetes = await _client
         .from('operations_viajes_paquetes')
         .select('id, estado, parada_id')
         .eq('viaje_id', tripId)
         .filter('deleted_at', 'is', null);
 
-    // 4. Construir lista de paradas
     final stopsList = <TripStop>[];
     int order = 1;
     for (final cp in checkpoints) {
@@ -141,56 +133,50 @@ class TripDetailRepository {
       final checkpointId = cp['id'] as String;
       final paradaId = cp['parada_id'] as String?;
 
-      // Contar paquetes para esta parada
       int pkgCount = 0;
       if (paradaId != null) {
-        pkgCount = paquetes
-            .where((p) => p['parada_id'] == paradaId)
-            .length;
+        pkgCount = paquetes.where((p) => p['parada_id'] == paradaId).length;
       }
 
-      stopsList.add(TripStop(
-        id: paradaId ?? checkpointId,
-        checkpointId: checkpointId,
-        name: parada?['nombre'] as String? ?? 'Sin nombre',
-        address: parada?['direccion'] as String?,
-        lat: (parada?['latitud'] as num?)?.toDouble(),
-        lng: (parada?['longitud'] as num?)?.toDouble(),
-        status: _mapStopStatus(estado),
-        order: order++,
-        etaMinutes: parada?['eta_minutos'] as int?,
-        packages: pkgCount,
-      ));
+      stopsList.add(
+        TripStop(
+          id: paradaId ?? checkpointId,
+          checkpointId: checkpointId,
+          name: parada?['nombre'] as String? ?? 'Sin nombre',
+          address: parada?['direccion'] as String?,
+          lat: (parada?['latitud'] as num?)?.toDouble(),
+          lng: (parada?['longitud'] as num?)?.toDouble(),
+          status: _mapStopStatus(estado),
+          order: order++,
+          etaMinutes: parada?['eta_minutos'] as int?,
+          packages: pkgCount,
+        ),
+      );
     }
 
-    // Ordenar por orden de la parada
     stopsList.sort((a, b) => a.order.compareTo(b.order));
 
-    // 5. Vehículo
-    String vehicleText = 'Sin vehículo';
+    String vehicleText = 'Sin asignar';
     final vehiculosAsignados = viaje['operations_viajes_vehiculos'] as List?;
     if (vehiculosAsignados != null && vehiculosAsignados.isNotEmpty) {
-      final vh = vehiculosAsignados.first['fleet_vehiculos'] as Map<String, dynamic>?;
+      final vh =
+          vehiculosAsignados.first['fleet_vehiculos'] as Map<String, dynamic>?;
       if (vh != null) {
         final parts = <String>[];
         if (vh['matricula'] != null) parts.add(vh['matricula'] as String);
         if (vh['marca'] != null) parts.add(vh['marca'] as String);
         if (vh['modelo'] != null) parts.add(vh['modelo'] as String);
-        if (parts.isNotEmpty) vehicleText = parts.join(' - ');
+        if (parts.isNotEmpty) vehicleText = parts.join(' · ');
       }
     }
 
-    // 6. Ruta
     final ruta = viaje['operations_rutas'] as Map<String, dynamic>?;
     final origin = ruta?['origen'] as String? ?? 'Origen';
     final destination = ruta?['destino'] as String? ?? 'Destino';
-
-    // 7. Paquetes restantes
     final paquetesRestantes = paquetes
         .where((p) => p['estado'] != 'entregado')
         .length;
 
-    // 8. Conductor (de la asignación)
     final conductorResult = await _client
         .from('operations_viajes_conductores')
         .select('''
@@ -201,16 +187,18 @@ class TripDetailRepository {
         .filter('deleted_at', 'is', null)
         .maybeSingle();
 
-    String driverText = '—';
+    String driverText = 'Sin asignar';
     if (conductorResult != null) {
-      final conductor = conductorResult['fleet_conductores'] as Map<String, dynamic>?;
+      final conductor =
+          conductorResult['fleet_conductores'] as Map<String, dynamic>?;
       if (conductor != null) {
         final usuario = conductor['core_usuarios'] as Map<String, dynamic>?;
         if (usuario != null) {
           final nombre = usuario['nombre'] as String? ?? '';
           final apellido = usuario['apellido'] as String? ?? '';
           final licencia = conductor['licencia'] as String? ?? '';
-          driverText = '$nombre $apellido · $licencia'.trim();
+          driverText = '$nombre $apellido'.trim();
+          if (licencia.isNotEmpty) driverText += ' · $licencia';
         }
       }
     }
@@ -226,7 +214,9 @@ class TripDetailRepository {
       totalDistance: (viaje['km_estimados'] as num?)?.toDouble(),
       remainingDistance: (viaje['distancia_real_km'] as num?)?.toDouble(),
       stops: stopsList.length,
-      completedStops: stopsList.where((s) => s.status == StopStatus.completed).length,
+      completedStops: stopsList
+          .where((s) => s.status == StopStatus.completed)
+          .length,
       packages: paquetes.length,
       packagesRemaining: paquetesRestantes,
       vehicle: vehicleText,
@@ -249,120 +239,248 @@ class TripDetailRepository {
         return StopStatus.llego;
       case 'en_proceso':
         return StopStatus.inProgress;
-      case 'pendiente':
       default:
         return StopStatus.pending;
     }
   }
 }
 
-// ==================== PROVIDER ====================
+// ==================== PROVIDERS ====================
 
 final tripDetailRepositoryProvider = Provider<TripDetailRepository>((ref) {
   return TripDetailRepository(SupabaseConfig.client);
 });
 
-final tripDetailProvider =
-    FutureProvider.family.autoDispose<TripDetail, String>((ref, tripId) async {
-  final repo = ref.watch(tripDetailRepositoryProvider);
-  return repo.fetchTripDetail(tripId);
-});
+final tripDetailProvider = FutureProvider.family
+    .autoDispose<TripDetail, String>((ref, tripId) async {
+      final repo = ref.watch(tripDetailRepositoryProvider);
+      return repo.fetchTripDetail(tripId);
+    });
 
 // ==================== SCREEN ====================
 
 class TripDetailScreen extends ConsumerStatefulWidget {
   final String tripId;
-
   const TripDetailScreen({super.key, required this.tripId});
 
   @override
   ConsumerState<TripDetailScreen> createState() => _TripDetailScreenState();
 }
 
-class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
+class _TripDetailScreenState extends ConsumerState<TripDetailScreen>
+    with SingleTickerProviderStateMixin {
   Timer? _refreshTimer;
+  DateTime? _lastUpdated;
+  late final AnimationController _animCtrl;
+  late final Animation<double> _fadeIn;
 
   @override
   void initState() {
     super.initState();
-    // Auto-refresh cada 30 segundos mientras la pantalla está activa
+    _animCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
+    _fadeIn = CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut);
+
     _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) {
-        ref.invalidate(tripDetailProvider(widget.tripId));
-      }
+      if (mounted) _refresh();
     });
+  }
+
+  Future<void> _refresh() async {
+    try {
+      await ref.refresh(tripDetailProvider(widget.tripId).future);
+      if (mounted) setState(() => _lastUpdated = DateTime.now());
+    } catch (_) {}
   }
 
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _animCtrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final detailAsync = ref.watch(tripDetailProvider(widget.tripId));
-    final colorScheme = Theme.of(context).colorScheme;
+    final async = ref.watch(tripDetailProvider(widget.tripId));
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Detalle del Viaje'),
-        actions: [
-          IconButton(
-            tooltip: 'Actualizar',
-            onPressed: () => ref.invalidate(tripDetailProvider(widget.tripId)),
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
-      ),
-      body: detailAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, _) => _ErrorView(
-          error: error,
-          onRetry: () => ref.invalidate(tripDetailProvider(widget.tripId)),
-        ),
-        data: (detail) => _buildContent(context, ref, detail, colorScheme),
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      body: async.when(
+        skipLoadingOnRefresh: true,
+        loading: () => const _LoadingView(),
+        error: (_, __) => _ErrorView(onRetry: _refresh),
+        data: (detail) {
+          _animCtrl.forward();
+          _lastUpdated ??= DateTime.now();
+          return FadeTransition(
+            opacity: _fadeIn,
+            child: _TripContent(
+              detail: detail,
+              lastUpdated: _lastUpdated,
+              onRefresh: _refresh,
+            ),
+          );
+        },
       ),
     );
   }
+}
 
-  Widget _buildContent(BuildContext context, WidgetRef ref, TripDetail detail, ColorScheme colorScheme) {
-    return RefreshIndicator(
-      onRefresh: () async {
-        // ignore: unused_result
-        ref.refresh(tripDetailProvider(widget.tripId));
-        await ref.read(tripDetailProvider(widget.tripId).future);
-      },
-      child: SingleChildScrollView(
+// ==================== MAIN CONTENT ====================
+
+class _TripContent extends StatelessWidget {
+  final TripDetail detail;
+  final DateTime? lastUpdated;
+  final Future<void> Function() onRefresh;
+
+  const _TripContent({
+    required this.detail,
+    required this.lastUpdated,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator.adaptive(
+      onRefresh: onRefresh,
+      child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
-        child: Column(
-          children: [
-            _TripHeader(detail: detail),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Column(
-                children: [
-                  const SizedBox(height: 16),
-                  _StatsRow(detail: detail),
-                  const SizedBox(height: 24),
-                  _SectionTitle(title: 'Paradas (${detail.stopsList.length})'),
-                  const SizedBox(height: 12),
-                  if (detail.stopsList.isEmpty)
-                    const _EmptyStops()
-                  else
-                    ...List.generate(detail.stopsList.length, (i) {
-                      return _StopTile(
-                        stop: detail.stopsList[i],
-                        index: i + 1,
-                        isLast: i == detail.stopsList.length - 1,
-                      );
-                    }),
-                  const SizedBox(height: 24),
-                  _TripInfo(detail: detail),
-                  const SizedBox(height: 100),
-                ],
+        slivers: [
+          // ── Collapsing App Bar ──
+          _TripSliverAppBar(detail: detail, onRefresh: onRefresh),
+
+          // ── Route summary ──
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+            sliver: SliverToBoxAdapter(
+              child: _RouteSummaryCard(detail: detail),
+            ),
+          ),
+
+          // ── Metrics ──
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            sliver: SliverToBoxAdapter(child: _MetricsStrip(detail: detail)),
+          ),
+
+          // ── Progress ──
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            sliver: SliverToBoxAdapter(child: _ProgressSection(detail: detail)),
+          ),
+
+          // ── Itinerary header ──
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 28, 20, 0),
+            sliver: SliverToBoxAdapter(
+              child: _SectionLabel(
+                title: 'Itinerario',
+                badge: '${detail.stops}',
               ),
             ),
+          ),
+
+          // ── Stops list ──
+          if (detail.stopsList.isEmpty)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+              sliver: const SliverToBoxAdapter(child: _EmptyStops()),
+            )
+          else
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+              sliver: SliverList.builder(
+                itemCount: detail.stopsList.length,
+                itemBuilder: (context, i) => _StopTile(
+                  stop: detail.stopsList[i],
+                  index: i + 1,
+                  total: detail.stopsList.length,
+                ),
+              ),
+            ),
+
+          // ── Operation details ──
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 28, 20, 0),
+            sliver: SliverToBoxAdapter(
+              child: _SectionLabel(title: 'Detalles de operación'),
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+            sliver: SliverToBoxAdapter(child: _DetailsCard(detail: detail)),
+          ),
+
+          // ── Last updated ──
+          if (lastUpdated != null)
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              sliver: SliverToBoxAdapter(
+                child: _LastUpdatedLabel(time: lastUpdated!),
+              ),
+            ),
+
+          // ── Bottom spacing ──
+          const SliverToBoxAdapter(child: SizedBox(height: 40)),
+        ],
+      ),
+    );
+  }
+}
+
+// ==================== SLIVER APP BAR ====================
+
+class _TripSliverAppBar extends StatelessWidget {
+  final TripDetail detail;
+  final VoidCallback onRefresh;
+
+  const _TripSliverAppBar({required this.detail, required this.onRefresh});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final statusStyle = _resolveStatusStyle(scheme, detail.status);
+
+    return SliverAppBar(
+      pinned: true,
+      expandedHeight: 120,
+      backgroundColor: scheme.surface,
+      surfaceTintColor: Colors.transparent,
+      scrolledUnderElevation: 0.5,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back_rounded),
+        onPressed: () => Navigator.maybePop(context),
+      ),
+      actions: [
+        IconButton(
+          tooltip: 'Actualizar',
+          icon: const Icon(Icons.refresh_rounded),
+          onPressed: onRefresh,
+        ),
+        const SizedBox(width: 4),
+      ],
+      flexibleSpace: FlexibleSpaceBar(
+        titlePadding: const EdgeInsets.only(left: 56, bottom: 14, right: 16),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                detail.code,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: scheme.onSurface,
+                  letterSpacing: -0.3,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 8),
+            _CompactStatusPill(style: statusStyle),
           ],
         ),
       ),
@@ -370,61 +488,38 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
   }
 }
 
-// ==================== COMPONENTS ====================
-
-class _TripHeader extends StatelessWidget {
-  final TripDetail detail;
-
-  const _TripHeader({required this.detail});
+class _CompactStatusPill extends StatelessWidget {
+  final _StatusStyle style;
+  const _CompactStatusPill({required this.style});
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
-        color: colorScheme.primaryContainer.withOpacity(0.3),
+        color: style.containerColor,
+        borderRadius: BorderRadius.circular(8),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: colorScheme.primary,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  detail.code,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.onPrimary,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              _StatusChip(status: detail.status),
-            ],
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: style.foreground,
+            ),
           ),
-          const SizedBox(height: 16),
-          _RouteRow(
-            icon: Icons.circle,
-            color: Colors.green,
-            label: 'Origen',
-            value: detail.origin,
-            detail: detail.originDetail,
-          ),
-          const SizedBox(height: 12),
-          _RouteRow(
-            icon: Icons.location_on,
-            color: Colors.red,
-            label: 'Destino',
-            value: detail.destination,
-            detail: detail.destinationDetail,
+          const SizedBox(width: 5),
+          Text(
+            style.label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: style.foreground,
+              letterSpacing: 0.2,
+            ),
           ),
         ],
       ),
@@ -432,54 +527,139 @@ class _TripHeader extends StatelessWidget {
   }
 }
 
-class _RouteRow extends StatelessWidget {
-  final IconData icon;
-  final Color color;
-  final String label;
-  final String value;
-  final String? detail;
+// ==================== ROUTE SUMMARY ====================
 
-  const _RouteRow({
-    required this.icon,
-    required this.color,
-    required this.label,
-    required this.value,
-    this.detail,
-  });
+class _RouteSummaryCard extends StatelessWidget {
+  final TripDetail detail;
+  const _RouteSummaryCard({required this.detail});
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final scheme = Theme.of(context).colorScheme;
+    final routeName = detail.originDetail?.trim();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: scheme.outlineVariant.withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (routeName != null && routeName.isNotEmpty) ...[
+            Row(
+              children: [
+                Icon(Icons.alt_route_rounded, size: 16, color: scheme.primary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    routeName,
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      color: scheme.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+          ],
+
+          // Origin
+          _EndpointRow(type: _EndpointType.origin, text: detail.origin),
+
+          // Connector
+          Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: Column(
+              children: List.generate(
+                3,
+                (_) => Container(
+                  width: 2,
+                  height: 4,
+                  margin: const EdgeInsets.symmetric(vertical: 2),
+                  decoration: BoxDecoration(
+                    color: scheme.outlineVariant,
+                    borderRadius: BorderRadius.circular(1),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Destination
+          _EndpointRow(
+            type: _EndpointType.destination,
+            text: detail.destination,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _EndpointType { origin, destination }
+
+class _EndpointRow extends StatelessWidget {
+  final _EndpointType type;
+  final String text;
+
+  const _EndpointRow({required this.type, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final isOrigin = type == _EndpointType.origin;
+
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, color: color, size: 18),
+        Container(
+          width: 18,
+          height: 18,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isOrigin
+                ? const Color(0xFF16A34A).withOpacity(0.15)
+                : const Color(0xFFDC2626).withOpacity(0.15),
+          ),
+          child: Center(
+            child: Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isOrigin
+                    ? const Color(0xFF16A34A)
+                    : const Color(0xFFDC2626),
+              ),
+            ),
+          ),
+        ),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                label,
+                isOrigin ? 'Origen' : 'Destino',
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
                 ),
               ),
               Text(
-                value,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+                text,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
-              if (detail != null) ...[
-                const SizedBox(height: 2),
-                Text(
-                  detail!,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
             ],
           ),
         ),
@@ -488,94 +668,41 @@ class _RouteRow extends StatelessWidget {
   }
 }
 
-class _StatusChip extends StatelessWidget {
-  final String status;
+// ==================== METRICS ====================
 
-  const _StatusChip({required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    Color bgColor;
-    Color textColor;
-    String label;
-
-    switch (status) {
-      case 'en_curso':
-        bgColor = colorScheme.primary;
-        textColor = colorScheme.onPrimary;
-        label = 'En Curso';
-        break;
-      case 'completado':
-        bgColor = Colors.green;
-        textColor = Colors.white;
-        label = 'Completado';
-        break;
-      case 'pausado':
-        bgColor = Colors.orange;
-        textColor = Colors.white;
-        label = 'Pausado';
-        break;
-      case 'programado':
-      default:
-        bgColor = Colors.grey.shade200;
-        textColor = Colors.grey.shade700;
-        label = 'Programado';
-        break;
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          color: textColor,
-        ),
-      ),
-    );
-  }
-}
-
-class _StatsRow extends StatelessWidget {
+class _MetricsStrip extends StatelessWidget {
   final TripDetail detail;
-
-  const _StatsRow({required this.detail});
+  const _MetricsStrip({required this.detail});
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
         Expanded(
-          child: _StatCard(
-            icon: Icons.route,
-            label: 'Distancia',
+          child: _MetricTile(
+            icon: Icons.straighten_rounded,
             value: detail.totalDistance != null
-                ? '${detail.totalDistance!.toStringAsFixed(1)} km'
+                ? '${detail.totalDistance!.toStringAsFixed(0)} km'
                 : '—',
+            label: 'Distancia',
           ),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 10),
         Expanded(
-          child: _StatCard(
-            icon: Icons.access_time,
-            label: 'Tiempo',
-            value: detail.estimatedArrival != null
-                ? '${detail.estimatedArrival!.hour.toString().padLeft(2, '0')}:${detail.estimatedArrival!.minute.toString().padLeft(2, '0')}'
-                : '—',
+          child: _MetricTile(
+            icon: Icons.schedule_rounded,
+            value: _fmtTime(detail.estimatedArrival),
+            label: 'Llegada est.',
           ),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 10),
         Expanded(
-          child: _StatCard(
-            icon: Icons.inventory_2,
+          child: _MetricTile(
+            icon: Icons.inventory_2_outlined,
+            value: detail.packages == 0
+                ? '—'
+                : '${detail.packagesDelivered}/${detail.packages}',
             label: 'Paquetes',
-            value: '${detail.packagesRemaining}/${detail.packages}',
           ),
         ),
       ],
@@ -583,237 +710,419 @@ class _StatsRow extends StatelessWidget {
   }
 }
 
-class _StatCard extends StatelessWidget {
+class _MetricTile extends StatelessWidget {
   final IconData icon;
-  final String label;
   final String value;
+  final String label;
 
-  const _StatCard({
+  const _MetricTile({
     required this.icon,
-    required this.label,
     required this.value,
+    required this.label,
   });
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final scheme = Theme.of(context).colorScheme;
 
-    return Card(
-      elevation: 0,
-      color: colorScheme.surfaceContainerHigh,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-        child: Column(
-          children: [
-            Icon(icon, size: 20, color: colorScheme.primary),
-            const SizedBox(height: 4),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(
-                value,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: scheme.outlineVariant.withOpacity(0.5)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, size: 20, color: scheme.primary),
+          const SizedBox(height: 8),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              value,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.3,
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: Theme.of(
+              context,
+            ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ==================== PROGRESS ====================
+
+class _ProgressSection extends StatelessWidget {
+  final TripDetail detail;
+  const _ProgressSection({required this.detail});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final pct = (detail.progress * 100).round();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: scheme.outlineVariant.withOpacity(0.5)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Icon(Icons.route_rounded, size: 18, color: scheme.primary),
+              const SizedBox(width: 8),
+              Text(
+                'Progreso',
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const Spacer(),
+              Text(
+                '$pct%',
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: detail.progress >= 1.0
+                      ? const Color(0xFF16A34A)
+                      : scheme.primary,
                 ),
               ),
-            ),
-            Text(
-              label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: LinearProgressIndicator(
+              value: detail.progress,
+              minHeight: 8,
+              backgroundColor: scheme.outlineVariant.withOpacity(0.3),
+              valueColor: AlwaysStoppedAnimation(
+                detail.progress >= 1.0
+                    ? const Color(0xFF16A34A)
+                    : scheme.primary,
               ),
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${detail.completedStops} de ${detail.stops} paradas',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              if (detail.packages > 0)
+                Text(
+                  '${detail.packagesDelivered}/${detail.packages} entregados',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-class _SectionTitle extends StatelessWidget {
+// ==================== SECTION LABEL ====================
+
+class _SectionLabel extends StatelessWidget {
   final String title;
+  final String? badge;
 
-  const _SectionTitle({required this.title});
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Text(
-        title,
-        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-      ),
-    );
-  }
-}
-
-class _EmptyStops extends StatelessWidget {
-  const _EmptyStops();
+  const _SectionLabel({required this.title, this.badge});
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          children: [
-            Icon(
-              Icons.location_off,
-              size: 40,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Sin paradas asignadas',
-              style: TextStyle(fontSize: 14),
-            ),
-          ],
+    final scheme = Theme.of(context).colorScheme;
+
+    return Row(
+      children: [
+        Text(
+          title,
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.2,
+          ),
         ),
-      ),
+        if (badge != null) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: scheme.primaryContainer,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              badge!,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: scheme.onPrimaryContainer,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }
+
+// ==================== STOP TILE ====================
 
 class _StopTile extends StatelessWidget {
   final TripStop stop;
   final int index;
-  final bool isLast;
+  final int total;
 
   const _StopTile({
     required this.stop,
     required this.index,
-    required this.isLast,
+    required this.total,
+  });
+
+  bool get _isLast => index == total;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = _resolveStopStyle(scheme, stop.status);
+    final isCurrent =
+        stop.status == StopStatus.inProgress || stop.status == StopStatus.llego;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: _isLast ? 0 : 0),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── Timeline column ──
+            SizedBox(
+              width: 36,
+              child: Column(
+                children: [
+                  _StopIndicator(stop: stop, index: index, style: style),
+                  if (!_isLast)
+                    Expanded(
+                      child: Container(
+                        width: 2,
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        decoration: BoxDecoration(
+                          color: stop.status == StopStatus.completed
+                              ? const Color(0xFF16A34A).withOpacity(0.4)
+                              : scheme.outlineVariant.withOpacity(0.5),
+                          borderRadius: BorderRadius.circular(1),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+
+            // ── Content card ──
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: isCurrent
+                      ? scheme.primaryContainer.withOpacity(0.5)
+                      : scheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: isCurrent
+                        ? scheme.primary.withOpacity(0.4)
+                        : scheme.outlineVariant.withOpacity(0.5),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Name + status
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            stop.name ?? 'Sin nombre',
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  color: stop.status == StopStatus.completed
+                                      ? scheme.onSurfaceVariant
+                                      : null,
+                                  decoration:
+                                      stop.status == StopStatus.completed
+                                      ? TextDecoration.lineThrough
+                                      : null,
+                                  decorationColor: scheme.onSurfaceVariant,
+                                ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _CompactStatusPill(style: style),
+                      ],
+                    ),
+
+                    // Address
+                    if (stop.address != null &&
+                        stop.address!.trim().isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        stop.address!,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+
+                    // Meta tags
+                    if (stop.etaMinutes != null || stop.packages > 0) ...[
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: [
+                          if (stop.etaMinutes != null)
+                            _TagChip(
+                              icon: Icons.schedule_rounded,
+                              text: '${stop.etaMinutes} min',
+                            ),
+                          if (stop.packages > 0)
+                            _TagChip(
+                              icon: Icons.inventory_2_outlined,
+                              text: '${stop.packages} pkg',
+                            ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StopIndicator extends StatelessWidget {
+  final TripStop stop;
+  final int index;
+  final _StatusStyle style;
+
+  const _StopIndicator({
+    required this.stop,
+    required this.index,
+    required this.style,
   });
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final scheme = Theme.of(context).colorScheme;
 
-    Color circleColor;
-    IconData? icon;
-    bool showCheck = false;
+    return Container(
+      width: 30,
+      height: 30,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: style.markerBg,
+        border: stop.status == StopStatus.pending
+            ? Border.all(color: scheme.outlineVariant, width: 1.5)
+            : null,
+        boxShadow:
+            (stop.status == StopStatus.inProgress ||
+                stop.status == StopStatus.llego)
+            ? [
+                BoxShadow(
+                  color: style.foreground.withOpacity(0.25),
+                  blurRadius: 8,
+                  spreadRadius: 1,
+                ),
+              ]
+            : null,
+      ),
+      child: Center(child: _markerContent(context)),
+    );
+  }
 
+  Widget _markerContent(BuildContext context) {
     switch (stop.status) {
       case StopStatus.completed:
-        circleColor = Colors.green;
-        showCheck = true;
-        break;
-      case StopStatus.llego:
+        return const Icon(Icons.check_rounded, size: 16, color: Colors.white);
       case StopStatus.inProgress:
-        circleColor = colorScheme.primary;
-        icon = Icons.radio_button_checked;
-        break;
+        return const Icon(
+          Icons.local_shipping_rounded,
+          size: 15,
+          color: Colors.white,
+        );
+      case StopStatus.llego:
+        return const Icon(
+          Icons.location_on_rounded,
+          size: 15,
+          color: Colors.white,
+        );
       case StopStatus.pending:
-        circleColor = colorScheme.outline;
-        break;
-    }
-
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 40,
-            child: Column(
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: stop.status == StopStatus.completed
-                        ? Colors.green
-                        : stop.status == StopStatus.pending
-                            ? colorScheme.surfaceContainerHighest
-                            : colorScheme.primary,
-                    border: stop.status == StopStatus.pending
-                        ? Border.all(color: colorScheme.outline)
-                        : null,
-                  ),
-                  child: Center(
-                    child: showCheck
-                        ? const Icon(Icons.check, size: 18, color: Colors.white)
-                        : icon != null
-                            ? Icon(icon, size: 18, color: Colors.white)
-                            : Text(
-                                '$index',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: colorScheme.onSurface,
-                                ),
-                              ),
-                  ),
-                ),
-                if (!isLast)
-                  Expanded(
-                    child: Container(
-                      width: 2,
-                      color: stop.status == StopStatus.completed
-                          ? Colors.green
-                          : colorScheme.outlineVariant,
-                      margin: const EdgeInsets.symmetric(vertical: 4),
-                    ),
-                  ),
-              ],
-            ),
+        return Text(
+          '$index',
+          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+            fontWeight: FontWeight.w800,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    stop.name ?? 'Sin nombre',
-                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      decoration: stop.status == StopStatus.completed
-                          ? TextDecoration.lineThrough
-                          : null,
-                    ),
-                  ),
-                  if (stop.address != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      stop.address!,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      if (stop.etaMinutes != null) ...[
-                        Icon(Icons.schedule, size: 12, color: colorScheme.onSurfaceVariant),
-                        const SizedBox(width: 4),
-                        Text(
-                          '${stop.etaMinutes} min',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                      ],
-                      if (stop.packages > 0) ...[
-                        Icon(Icons.inventory_2, size: 12, color: colorScheme.onSurfaceVariant),
-                        const SizedBox(width: 4),
-                        Text(
-                          '${stop.packages} paquetes',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ],
-              ),
+        );
+    }
+  }
+}
+
+class _TagChip extends StatelessWidget {
+  final IconData icon;
+  final String text;
+
+  const _TagChip({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -822,127 +1131,346 @@ class _StopTile extends StatelessWidget {
   }
 }
 
-class _TripInfo extends StatelessWidget {
-  final TripDetail detail;
+// ==================== DETAILS CARD ====================
 
-  const _TripInfo({required this.detail});
+class _DetailsCard extends StatelessWidget {
+  final TripDetail detail;
+  const _DetailsCard({required this.detail});
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            _InfoRow(icon: Icons.local_shipping, label: 'Vehículo', value: detail.vehicle),
-            const Divider(height: 24),
-            _InfoRow(icon: Icons.person, label: 'Conductor', value: detail.driver),
-            if (detail.departureTime != null) ...[
-              const Divider(height: 24),
-              _InfoRow(
-                icon: Icons.login,
-                label: 'Salida',
-                value: '${detail.departureTime!.hour.toString().padLeft(2, '0')}:${detail.departureTime!.minute.toString().padLeft(2, '0')}',
+    final scheme = Theme.of(context).colorScheme;
+
+    final rows = <_DetailRow>[
+      _DetailRow(Icons.local_shipping_outlined, 'Vehículo', detail.vehicle),
+      _DetailRow(Icons.person_outline_rounded, 'Conductor', detail.driver),
+      if (detail.departureTime != null)
+        _DetailRow(
+          Icons.logout_rounded,
+          'Salida real',
+          _fmtDateTime(detail.departureTime!),
+        ),
+      if (detail.estimatedArrival != null)
+        _DetailRow(
+          Icons.flag_outlined,
+          'Llegada est.',
+          _fmtDateTime(detail.estimatedArrival!),
+        ),
+    ];
+
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: scheme.outlineVariant.withOpacity(0.5)),
+      ),
+      child: Column(
+        children: [
+          for (var i = 0; i < rows.length; i++) ...[
+            _DetailRowWidget(row: rows[i]),
+            if (i < rows.length - 1)
+              Divider(
+                height: 1,
+                indent: 60,
+                color: scheme.outlineVariant.withOpacity(0.5),
               ),
-            ],
-            if (detail.estimatedArrival != null) ...[
-              const Divider(height: 24),
-              _InfoRow(
-                icon: Icons.flag,
-                label: 'Llegada estimada',
-                value: '${detail.estimatedArrival!.hour.toString().padLeft(2, '0')}:${detail.estimatedArrival!.minute.toString().padLeft(2, '0')}',
-              ),
-            ],
-            const Divider(height: 24),
-            _InfoRow(
-              icon: Icons.check_circle,
-              label: 'Progreso',
-              value: '${detail.completedStops}/${detail.stops} paradas',
-            ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailRow {
+  final IconData icon;
+  final String label;
+  final String value;
+  const _DetailRow(this.icon, this.label, this.value);
+}
+
+class _DetailRowWidget extends StatelessWidget {
+  final _DetailRow row;
+  const _DetailRowWidget({required this.row});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: scheme.primaryContainer,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(row.icon, size: 18, color: scheme.primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  row.label,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  row.value,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ==================== LAST UPDATED ====================
+
+class _LastUpdatedLabel extends StatelessWidget {
+  final DateTime time;
+  const _LastUpdatedLabel({required this.time});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final h = time.hour.toString().padLeft(2, '0');
+    final m = time.minute.toString().padLeft(2, '0');
+
+    return Center(
+      child: Text(
+        'Última actualización · $h:$m',
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: scheme.onSurfaceVariant.withOpacity(0.6),
         ),
       ),
     );
   }
 }
 
-class _InfoRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
+// ==================== EMPTY / LOADING / ERROR ====================
 
-  const _InfoRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
+class _EmptyStops extends StatelessWidget {
+  const _EmptyStops();
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: colorScheme.primary),
-        const SizedBox(width: 12),
-        Text(
-          label,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: colorScheme.onSurfaceVariant,
+    final scheme = Theme.of(context).colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(32),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: scheme.outlineVariant.withOpacity(0.5)),
+      ),
+      child: Column(
+        children: [
+          Icon(
+            Icons.location_off_outlined,
+            size: 40,
+            color: scheme.onSurfaceVariant,
           ),
-        ),
-        const Spacer(),
-        Flexible(
-          child: Text(
-            value,
-            textAlign: TextAlign.end,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-            overflow: TextOverflow.ellipsis,
+          const SizedBox(height: 12),
+          Text(
+            'Sin paradas asignadas',
+            style: Theme.of(
+              context,
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
           ),
-        ),
-      ],
+          const SizedBox(height: 4),
+          Text(
+            'Aparecerán aquí cuando se configuren en la ruta.',
+            textAlign: TextAlign.center,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LoadingView extends StatelessWidget {
+  const _LoadingView();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator.adaptive(),
+          SizedBox(height: 16),
+          Text('Cargando viaje…'),
+        ],
+      ),
     );
   }
 }
 
 class _ErrorView extends StatelessWidget {
-  final Object error;
   final VoidCallback onRetry;
-
-  const _ErrorView({required this.error, required this.onRetry});
+  const _ErrorView({required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.cloud_off, size: 64, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            Icon(
+              Icons.cloud_off_rounded,
+              size: 56,
+              color: scheme.onSurfaceVariant,
+            ),
             const SizedBox(height: 16),
-            const Text(
-              'No pudimos cargar el viaje',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            Text(
+              'Error al cargar',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             Text(
-              error.toString(),
+              'Verifica tu conexión e intenta nuevamente.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 12, color: Colors.grey),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
             ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
+            const SizedBox(height: 20),
+            FilledButton.icon(
               onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('REINTENTAR'),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reintentar'),
             ),
           ],
         ),
       ),
     );
   }
+}
+
+// ==================== STATUS STYLE SYSTEM ====================
+
+class _StatusStyle {
+  final String label;
+  final Color foreground;
+  final Color containerColor;
+  final Color markerBg;
+
+  const _StatusStyle({
+    required this.label,
+    required this.foreground,
+    required this.containerColor,
+    required this.markerBg,
+  });
+}
+
+_StatusStyle _resolveStatusStyle(ColorScheme scheme, String status) {
+  switch (status.toLowerCase()) {
+    case 'en_curso':
+    case 'en_proceso':
+    case 'activo':
+      return _StatusStyle(
+        label: 'En curso',
+        foreground: scheme.primary,
+        containerColor: scheme.primaryContainer,
+        markerBg: scheme.primary,
+      );
+    case 'completado':
+      return _StatusStyle(
+        label: 'Completado',
+        foreground: const Color(0xFF16A34A),
+        containerColor: const Color(0xFF16A34A).withOpacity(0.12),
+        markerBg: const Color(0xFF16A34A),
+      );
+    case 'pausado':
+      return _StatusStyle(
+        label: 'Pausado',
+        foreground: const Color(0xFFD97706),
+        containerColor: const Color(0xFFD97706).withOpacity(0.12),
+        markerBg: const Color(0xFFD97706),
+      );
+    case 'cancelado':
+      return _StatusStyle(
+        label: 'Cancelado',
+        foreground: scheme.error,
+        containerColor: scheme.errorContainer,
+        markerBg: scheme.error,
+      );
+    default:
+      return _StatusStyle(
+        label: 'Programado',
+        foreground: scheme.onSurfaceVariant,
+        containerColor: scheme.surfaceContainerHighest,
+        markerBg: scheme.surfaceContainerHighest,
+      );
+  }
+}
+
+_StatusStyle _resolveStopStyle(ColorScheme scheme, StopStatus status) {
+  switch (status) {
+    case StopStatus.completed:
+      return _StatusStyle(
+        label: 'Completada',
+        foreground: const Color(0xFF16A34A),
+        containerColor: const Color(0xFF16A34A).withOpacity(0.12),
+        markerBg: const Color(0xFF16A34A),
+      );
+    case StopStatus.inProgress:
+      return _StatusStyle(
+        label: 'En curso',
+        foreground: scheme.primary,
+        containerColor: scheme.primaryContainer,
+        markerBg: scheme.primary,
+      );
+    case StopStatus.llego:
+      return _StatusStyle(
+        label: 'Llegó',
+        foreground: scheme.primary,
+        containerColor: scheme.primaryContainer,
+        markerBg: scheme.primary,
+      );
+    case StopStatus.pending:
+      return _StatusStyle(
+        label: 'Pendiente',
+        foreground: scheme.onSurfaceVariant,
+        containerColor: scheme.surfaceContainerHighest,
+        markerBg: scheme.surfaceContainerLow,
+      );
+  }
+}
+
+// ==================== FORMATTERS ====================
+
+String _fmtTime(DateTime? dt) {
+  if (dt == null) return '—';
+  final l = dt.toLocal();
+  return '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}';
+}
+
+String _fmtDateTime(DateTime dt) {
+  final l = dt.toLocal();
+  return '${l.day.toString().padLeft(2, '0')}/${l.month.toString().padLeft(2, '0')} · ${_fmtTime(l)}';
 }
