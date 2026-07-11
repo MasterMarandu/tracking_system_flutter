@@ -18,6 +18,15 @@ String _formatClock(String? value) {
   return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
 }
 
+bool _needsGpsWarning(GpsSignalQuality quality) {
+  return switch (quality) {
+    GpsSignalQuality.none ||
+    GpsSignalQuality.poor ||
+    GpsSignalQuality.weak => true,
+    _ => false,
+  };
+}
+
 // ==================== DESIGN TOKENS ====================
 
 class _T {
@@ -28,30 +37,39 @@ class _T {
   static const double xl = 20;
   static const double xxl = 24;
 
-  static const double rMd = 12;
-  static const double rXl = 24;
+  static const double rMd = 14;
+  static const double rXl = 28;
 
-  static const double fCaption = 12;
-  static const double fBody = 14;
-  static const double fBodyLg = 16;
-  static const double fTitle = 18;
-  static const double fHeadline = 24;
+  static const double fCaption = 11;
+  static const double fBody = 13;
+  static const double fBodyLg = 15;
+  static const double fTitle = 17;
+  static const double fHeadline = 22;
 
   static const Color primary = Color(0xFF0F172A);
   static const Color accent = Color(0xFF2563EB);
-  static const Color success = Color(0xFF10B981);
-  static const Color danger = Color(0xFFEF4444);
-  static const Color warning = Color(0xFFF59E0B);
+  static const Color success = Color(0xFF059669);
+  static const Color danger = Color(0xFFDC2626);
+  static const Color warning = Color(0xFFD97706);
+  static const Color warningLight = Color(0xFFFEF3C7);
   static const Color neutral = Color(0xFF64748B);
-  static const Color bg = Color(0xFFF1F5F9);
+  static const Color bg = Color(0xFFF8FAFC);
 
   static Color alpha(Color c, double a) => c.withValues(alpha: a);
 
-  static List<BoxShadow> shadow = [
+  static List<BoxShadow> shadowSm = [
     BoxShadow(
-      color: const Color(0xFF000000).withValues(alpha: 0.08),
-      blurRadius: 15,
+      color: const Color(0xFF0F172A).withValues(alpha: 0.05),
+      blurRadius: 10,
       offset: const Offset(0, 4),
+    ),
+  ];
+
+  static List<BoxShadow> shadowLg = [
+    BoxShadow(
+      color: const Color(0xFF0F172A).withValues(alpha: 0.1),
+      blurRadius: 30,
+      offset: const Offset(0, 10),
     ),
   ];
 }
@@ -70,6 +88,8 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen>
   bool _showTraffic = false;
   StreamSubscription? _sub;
   final ValueNotifier<double?> _speed = ValueNotifier(null);
+  final ValueNotifier<GpsSignalQuality> _gpsQuality =
+      ValueNotifier(GpsService.instance.currentSignalQuality);
   late final AnimationController _pulse;
   late final Animation<double> _pulseAnim;
 
@@ -78,15 +98,17 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen>
     super.initState();
     _pulse = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1800),
+      duration: const Duration(milliseconds: 2000),
     )..repeat();
-    _pulseAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _pulse, curve: Curves.easeOut),
-    );
+    _pulseAnim = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeOutCubic));
 
     _sub = GpsService.instance.positionStream.listen((p) {
       final s = p.speed * 3.6;
-      _speed.value = s.isFinite ? s.clamp(0, 250) : null;
+      _speed.value = s.isFinite ? s.clamp(0.0, 250.0).toDouble() : null;
+      _gpsQuality.value = GpsService.instance.currentSignalQuality;
     });
   }
 
@@ -94,6 +116,7 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen>
   void dispose() {
     _sub?.cancel();
     _speed.dispose();
+    _gpsQuality.dispose();
     _pulse.dispose();
     super.dispose();
   }
@@ -101,7 +124,6 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen>
   @override
   Widget build(BuildContext context) {
     final async = ref.watch(bootstrapProvider);
-    final gpsQ = GpsService.instance.currentSignalQuality;
     final tracking = LocationService.instance.isActive;
 
     return Scaffold(
@@ -109,19 +131,23 @@ class _TrackingScreenState extends ConsumerState<TrackingScreen>
       body: async.when(
         loading: () => const _LoadingView(),
         error: (e, _) => _ErrorView(
-          error: e,
           onRetry: () => ref.invalidate(bootstrapProvider),
         ),
         data: (boot) {
           if (boot?.trip == null) return const _NoTripView();
-          return _ActiveView(
-            bootstrap: boot!,
-            gpsQuality: gpsQ,
-            isTracking: tracking,
-            speedNotifier: _speed,
-            showTraffic: _showTraffic,
-            onToggleTraffic: () => setState(() => _showTraffic = !_showTraffic),
-            pulseAnim: _pulseAnim,
+          return ValueListenableBuilder<GpsSignalQuality>(
+            valueListenable: _gpsQuality,
+            builder: (context, gpsQ, _) {
+              return _ActiveView(
+                bootstrap: boot!,
+                gpsQuality: gpsQ,
+                isTracking: tracking,
+                speedNotifier: _speed,
+                onToggleTraffic: () =>
+                    setState(() => _showTraffic = !_showTraffic),
+                pulseAnim: _pulseAnim,
+              );
+            },
           );
         },
       ),
@@ -136,7 +162,6 @@ class _ActiveView extends StatelessWidget {
   final GpsSignalQuality gpsQuality;
   final bool isTracking;
   final ValueNotifier<double?> speedNotifier;
-  final bool showTraffic;
   final VoidCallback onToggleTraffic;
   final Animation<double> pulseAnim;
 
@@ -145,7 +170,6 @@ class _ActiveView extends StatelessWidget {
     required this.gpsQuality,
     required this.isTracking,
     required this.speedNotifier,
-    required this.showTraffic,
     required this.onToggleTraffic,
     required this.pulseAnim,
   });
@@ -169,30 +193,30 @@ class _ActiveView extends StatelessWidget {
         ),
 
         Positioned(
-          top: topPad + 70,
+          top: topPad + 66,
           left: _T.lg,
-          child: _RouteFloatingCard(trip: bootstrap.trip!),
-        ),
-
-        Positioned(
           right: _T.lg,
-          top: topPad + 70,
-          child: _MapControls(
-            showTraffic: showTraffic,
-            onToggleTraffic: onToggleTraffic,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Flexible(child: _RouteFloatingCard(trip: bootstrap.trip!)),
+              const SizedBox(width: _T.md),
+              _MapControls(),
+            ],
           ),
         ),
 
         DraggableScrollableSheet(
-          initialChildSize: 0.38,
-          minChildSize: 0.15,
-          maxChildSize: 0.9,
+          initialChildSize: 0.40,
+          minChildSize: 0.18,
+          maxChildSize: 0.90,
           snap: true,
+          snapSizes: const [0.18, 0.40, 0.90],
           builder: (ctx, ctrl) => _BottomSheet(
             scrollController: ctrl,
             bootstrap: bootstrap,
             speedNotifier: speedNotifier,
-            hasGps: hasGps,
+            gpsQuality: gpsQuality,
           ),
         ),
       ],
@@ -210,36 +234,54 @@ class _TopOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
+    final topPad = MediaQuery.of(context).padding.top;
+    final hasGps = gpsQuality != GpsSignalQuality.none;
+
+    // FIX #2: Tracking label distingue GPS sin señal
+    final trackingLabel = !isTracking
+        ? 'Pausado'
+        : !hasGps
+            ? 'Sin GPS'
+            : 'En vivo';
+
+    final trackingColor = !isTracking
+        ? _T.neutral
+        : !hasGps
+            ? _T.danger
+            : _T.accent;
+
+    final trackingIcon = !isTracking
+        ? Icons.sensors_off_rounded
+        : !hasGps
+            ? Icons.sync_problem_rounded
+            : Icons.sensors_rounded;
+
+    return ClipRect(
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
         child: Container(
-          color: Colors.white.withValues(alpha: 0.8),
+          color: Colors.white.withValues(alpha: 0.85),
           padding: EdgeInsets.only(
-            top: MediaQuery.of(context).padding.top + _T.sm,
-            bottom: _T.sm,
+            top: topPad + _T.sm,
+            bottom: _T.sm + 2,
             left: _T.lg,
             right: _T.lg,
           ),
           child: Row(
             children: [
               _StatusBadge(
-                icon: Icons.gps_fixed,
+                icon: Icons.gps_fixed_rounded,
                 label: _gpsLabel(gpsQuality),
                 color: _gpsColor(gpsQuality),
               ),
               const SizedBox(width: _T.sm),
               _StatusBadge(
-                icon: isTracking ? Icons.sensors : Icons.sensors_off,
-                label: isTracking ? 'En vivo' : 'Pausado',
-                color: isTracking ? _T.accent : _T.neutral,
+                icon: trackingIcon,
+                label: trackingLabel,
+                color: trackingColor,
               ),
               const Spacer(),
-              _StatusBadge(
-                icon: Icons.battery_std_rounded,
-                label: '—',
-                color: _T.neutral,
-              ),
+              // FIX #3: Batería eliminada — no hay servicio real
             ],
           ),
         ),
@@ -279,9 +321,9 @@ class _StatusBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: _T.alpha(color, 0.1),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _T.alpha(color, 0.2)),
+        color: _T.alpha(color, 0.08),
+        borderRadius: BorderRadius.circular(50),
+        border: Border.all(color: _T.alpha(color, 0.15), width: 1),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -292,8 +334,9 @@ class _StatusBadge extends StatelessWidget {
             label,
             style: TextStyle(
               fontSize: _T.fCaption,
-              fontWeight: FontWeight.bold,
+              fontWeight: FontWeight.w800,
               color: color,
+              letterSpacing: -0.2,
             ),
           ),
         ],
@@ -310,69 +353,85 @@ class _RouteFloatingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(_T.md),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(_T.rMd),
-        boxShadow: _T.shadow,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _TimePoint(
-            color: _T.success,
-            time: _formatClock(trip.departureTime),
-            label: 'Salida',
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 180),
+      child: Container(
+        padding: const EdgeInsets.all(_T.md),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(_T.rMd),
+          boxShadow: _T.shadowSm,
+          border: Border.all(color: Colors.black.withValues(alpha: 0.04)),
+        ),
+        child: IntrinsicHeight(
+          child: Row(
+            children: [
+              Column(
+                children: [
+                  const Icon(Icons.circle, size: 8, color: _T.success),
+                  Expanded(
+                    child: Container(
+                      width: 1.5,
+                      color: _T.neutral.withValues(alpha: 0.2),
+                    ),
+                  ),
+                  const Icon(Icons.circle, size: 8, color: _T.danger),
+                ],
+              ),
+              const SizedBox(width: _T.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _TimeDetail(
+                      label: 'Salida',
+                      time: _formatClock(trip.departureTime),
+                    ),
+                    const SizedBox(height: _T.sm + 2),
+                    _TimeDetail(
+                      label: 'Llegada est.',
+                      time: _formatClock(trip.estimatedArrival),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: _T.sm),
-          _TimePoint(
-            color: _T.danger,
-            time: _formatClock(trip.estimatedArrival),
-            label: 'ETA',
-          ),
-        ],
+        ),
       ),
     );
   }
 }
 
-class _TimePoint extends StatelessWidget {
-  final Color color;
-  final String time;
+class _TimeDetail extends StatelessWidget {
   final String label;
+  final String time;
 
-  const _TimePoint({
-    required this.color,
-    required this.time,
-    required this.label,
-  });
+  const _TimeDetail({required this.label, required this.time});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        Text(
+          label.toUpperCase(),
+          style: TextStyle(
+            fontSize: _T.fCaption,
+            fontWeight: FontWeight.w800,
+            color: _T.neutral,
+            letterSpacing: 0.5,
+          ),
         ),
-        const SizedBox(width: 10),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              label,
-              style: const TextStyle(fontSize: 10, color: _T.neutral),
-            ),
-            Text(
-              time,
-              style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
+        const SizedBox(height: 1),
+        Text(
+          time,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w900,
+            color: _T.primary,
+          ),
         ),
       ],
     );
@@ -382,24 +441,31 @@ class _TimePoint extends StatelessWidget {
 // ==================== MAP CONTROLS ====================
 
 class _MapControls extends StatelessWidget {
-  final bool showTraffic;
-  final VoidCallback onToggleTraffic;
-
-  const _MapControls({
-    required this.showTraffic,
-    required this.onToggleTraffic,
-  });
+  const _MapControls();
 
   @override
   Widget build(BuildContext context) {
     return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        _MapCircleButton(icon: Icons.my_location, onTap: null),
+        Tooltip(
+          message: 'Mi ubicación',
+          child: _MapCircleButton(icon: Icons.my_location_rounded, onTap: null),
+        ),
         const SizedBox(height: _T.sm),
-        _MapCircleButton(
-          icon: Icons.traffic,
-          isActive: showTraffic,
-          onTap: onToggleTraffic,
+        // FIX #6: Traffic deshabilitado hasta integrar mapa real
+        Tooltip(
+          message: 'Disponible al integrar mapa',
+          child: _MapCircleButton(
+            icon: Icons.traffic_rounded,
+            isActive: false,
+            onTap: null,
+          ),
+        ),
+        const SizedBox(height: _T.sm),
+        Tooltip(
+          message: 'Capas del mapa',
+          child: _MapCircleButton(icon: Icons.layers_rounded, onTap: null),
         ),
       ],
     );
@@ -421,22 +487,28 @@ class _MapCircleButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final enabled = onTap != null;
 
-    return GestureDetector(
-      onTap: onTap,
-      child: Opacity(
-        opacity: enabled ? 1.0 : 0.4,
-        child: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: isActive ? _T.accent : Colors.white,
-            shape: BoxShape.circle,
-            boxShadow: _T.shadow,
-          ),
-          child: Icon(
-            icon,
-            color: isActive ? Colors.white : _T.primary,
-            size: 22,
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.45,
+      child: Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          boxShadow: _T.shadowSm,
+        ),
+        child: Material(
+          color: isActive ? _T.accent : Colors.white,
+          shape: const CircleBorder(),
+          child: InkWell(
+            onTap: onTap,
+            customBorder: const CircleBorder(),
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child: Icon(
+                icon,
+                color: isActive ? Colors.white : _T.primary,
+                size: 20,
+              ),
+            ),
           ),
         ),
       ),
@@ -455,10 +527,10 @@ class _MapLayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: const Color(0xFFE2E8F0),
+      color: const Color(0xFFF1F5F9),
       child: Stack(
         children: [
-          Positioned.fill(child: CustomPaint(painter: _MapGridPainter())),
+          Positioned.fill(child: CustomPaint(painter: _VectorMapPainter())),
 
           if (hasGps)
             Center(
@@ -470,11 +542,11 @@ class _MapLayer extends StatelessWidget {
                     alignment: Alignment.center,
                     children: [
                       Container(
-                        width: 100 * v,
-                        height: 100 * v,
+                        width: 90 * v,
+                        height: 90 * v,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: _T.accent.withValues(alpha: 0.2 * (1 - v)),
+                          color: _T.accent.withValues(alpha: 0.15 * (1 - v)),
                         ),
                       ),
                       Container(
@@ -486,8 +558,9 @@ class _MapLayer extends StatelessWidget {
                           border: Border.all(color: Colors.white, width: 3),
                           boxShadow: [
                             BoxShadow(
-                              color: _T.accent.withValues(alpha: 0.5),
+                              color: _T.accent.withValues(alpha: 0.4),
                               blurRadius: 10,
+                              offset: const Offset(0, 4),
                             ),
                           ],
                         ),
@@ -506,18 +579,19 @@ class _MapLayer extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: _T.md,
-                  vertical: _T.xs,
+                  vertical: _T.xs + 1,
                 ),
                 decoration: BoxDecoration(
-                  color: _T.alpha(Colors.black, 0.45),
-                  borderRadius: BorderRadius.circular(_T.rMd),
+                  color: _T.primary.withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(50),
                 ),
-                child: const Text(
-                  'Mapa en desarrollo',
+                child: Text(
+                  'Ubicación simulada — mapa en desarrollo',
                   style: TextStyle(
                     fontSize: _T.fCaption,
                     color: Colors.white,
-                    fontWeight: FontWeight.w500,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.2,
                   ),
                 ),
               ),
@@ -529,18 +603,118 @@ class _MapLayer extends StatelessWidget {
   }
 }
 
-class _MapGridPainter extends CustomPainter {
+class _VectorMapPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.black.withValues(alpha: 0.03)
-      ..strokeWidth = 1;
-    for (double i = 0; i < size.width; i += 40) {
-      canvas.drawLine(Offset(i, 0), Offset(i, size.height), paint);
+    final parkPaint = Paint()..color = const Color(0xFFE2F0D9);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(size.width * 0.1, size.height * 0.2, 120, 150),
+        const Radius.circular(20),
+      ),
+      parkPaint,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(size.width * 0.6, size.height * 0.5, 200, 100),
+        const Radius.circular(20),
+      ),
+      parkPaint,
+    );
+
+    final riverPaint = Paint()
+      ..color = const Color(0xFFD4E6F1)
+      ..strokeWidth = 32
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawPath(
+      Path()
+        ..moveTo(-50, size.height * 0.8)
+        ..cubicTo(
+          size.width * 0.3,
+          size.height * 0.75,
+          size.width * 0.5,
+          size.height * 0.95,
+          size.width + 50,
+          size.height * 0.9,
+        ),
+      riverPaint,
+    );
+
+    final streetPaint = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 6
+      ..style = PaintingStyle.stroke;
+
+    for (var i = 1; i < 6; i++) {
+      canvas.drawLine(
+        Offset(0, size.height * 0.15 * i),
+        Offset(size.width, size.height * 0.15 * i),
+        streetPaint,
+      );
     }
-    for (double i = 0; i < size.height; i += 40) {
-      canvas.drawLine(Offset(0, i), Offset(size.width, i), paint);
+    for (var i = 1; i < 5; i++) {
+      canvas.drawLine(
+        Offset(size.width * 0.25 * i, 0),
+        Offset(size.width * 0.25 * i, size.height),
+        streetPaint,
+      );
     }
+
+    final hwShadow = Paint()
+      ..color = _T.accent.withValues(alpha: 0.1)
+      ..strokeWidth = 14
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    final hw = Paint()
+      ..color = _T.accent.withValues(alpha: 0.45)
+      ..strokeWidth = 6
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    final hwPath = Path()
+      ..moveTo(size.width * 0.15, size.height * 0.35)
+      ..cubicTo(
+        size.width * 0.35,
+        size.height * 0.25,
+        size.width * 0.5,
+        size.height * 0.45,
+        size.width * 0.78,
+        size.height * 0.38,
+      );
+
+    canvas.drawPath(hwPath, hwShadow);
+    canvas.drawPath(hwPath, hw);
+
+    _drawMarker(
+      canvas,
+      Offset(size.width * 0.15, size.height * 0.35),
+      _T.success,
+    );
+    _drawMarker(
+      canvas,
+      Offset(size.width * 0.78, size.height * 0.38),
+      _T.danger,
+    );
+  }
+
+  void _drawMarker(Canvas canvas, Offset center, Color color) {
+    canvas.drawCircle(
+      center,
+      15,
+      Paint()..color = color.withValues(alpha: 0.15),
+    );
+    canvas.drawCircle(center, 7, Paint()..color = color);
+    canvas.drawCircle(
+      center,
+      7,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
   }
 
   @override
@@ -553,25 +727,27 @@ class _BottomSheet extends StatelessWidget {
   final ScrollController scrollController;
   final DriverBootstrap bootstrap;
   final ValueNotifier<double?> speedNotifier;
-  final bool hasGps;
+  final GpsSignalQuality gpsQuality;
 
   const _BottomSheet({
     required this.scrollController,
     required this.bootstrap,
     required this.speedNotifier,
-    required this.hasGps,
+    required this.gpsQuality,
   });
 
   @override
   Widget build(BuildContext context) {
     final currentStop = bootstrap.currentStop;
+    final trip = bootstrap.trip!;
     final botPad = MediaQuery.of(context).padding.bottom;
+    final showGpsWarning = _needsGpsWarning(gpsQuality);
 
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(_T.rXl)),
-        boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 20)],
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(_T.rXl)),
+        boxShadow: _T.shadowLg,
       ),
       child: ListView(
         controller: scrollController,
@@ -579,20 +755,30 @@ class _BottomSheet extends StatelessWidget {
           left: _T.lg,
           right: _T.lg,
           top: _T.sm,
-          bottom: botPad + _T.xxl,
+          bottom: botPad + 72 + _T.xxl,
         ),
         children: [
           const _Handle(),
 
-          if (!hasGps) ...[
-            const _GpsAlert(),
-            const SizedBox(height: _T.sm),
+          // FIX #4: GPS alert para poor/weak también
+          if (showGpsWarning) ...[
+            _GpsAlert(quality: gpsQuality),
+            const SizedBox(height: _T.md),
           ],
 
-          _NextStopHero(currentStop: currentStop),
+          _NextStopHero(currentStop: currentStop, trip: trip),
 
           const SizedBox(height: _T.lg),
-          _MetricsGrid(speedNotifier: speedNotifier, currentStop: currentStop),
+          _MetricsGrid(
+            speedNotifier: speedNotifier,
+            currentStop: currentStop,
+            hasGps: gpsQuality != GpsSignalQuality.none,
+          ),
+
+          if (currentStop?.customerName?.isNotEmpty == true) ...[
+            const SizedBox(height: _T.lg),
+            _CustomerCard(customerName: currentStop!.customerName!),
+          ],
 
           const SizedBox(height: _T.xl),
           _ActionSection(currentStop: currentStop),
@@ -609,11 +795,11 @@ class _Handle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Container(
-        width: 40,
-        height: 5,
-        margin: const EdgeInsets.symmetric(vertical: 12),
+        width: 36,
+        height: 4,
+        margin: const EdgeInsets.only(top: 8, bottom: 16),
         decoration: BoxDecoration(
-          color: Colors.black12,
+          color: _T.neutral.withValues(alpha: 0.15),
           borderRadius: BorderRadius.circular(10),
         ),
       ),
@@ -624,26 +810,36 @@ class _Handle extends StatelessWidget {
 // ==================== GPS ALERT ====================
 
 class _GpsAlert extends StatelessWidget {
-  const _GpsAlert();
+  final GpsSignalQuality quality;
+  const _GpsAlert({required this.quality});
 
   @override
   Widget build(BuildContext context) {
+    final isNone = quality == GpsSignalQuality.none;
+
     return Container(
       padding: const EdgeInsets.all(_T.md),
       decoration: BoxDecoration(
-        color: _T.alpha(_T.danger, 0.1),
+        color: _T.alpha(_T.danger, 0.08),
         borderRadius: BorderRadius.circular(_T.rMd),
+        border: Border.all(color: _T.alpha(_T.danger, 0.12)),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          Icon(Icons.gps_off, color: _T.danger, size: 20),
-          SizedBox(width: 12),
+          Icon(
+            isNone ? Icons.gps_off_rounded : Icons.gps_not_fixed_rounded,
+            color: _T.danger,
+            size: 18,
+          ),
+          const SizedBox(width: _T.sm),
           Expanded(
             child: Text(
-              'Señal GPS débil — última posición conocida',
-              style: TextStyle(
+              isNone
+                  ? 'Sin señal GPS — ubicación actual no disponible'
+                  : 'Señal GPS débil — la ubicación puede ser imprecisa',
+              style: const TextStyle(
                 color: _T.danger,
-                fontWeight: FontWeight.bold,
+                fontWeight: FontWeight.w700,
                 fontSize: _T.fBody,
               ),
             ),
@@ -658,7 +854,9 @@ class _GpsAlert extends StatelessWidget {
 
 class _NextStopHero extends StatelessWidget {
   final BootstrapCurrentStop? currentStop;
-  const _NextStopHero({required this.currentStop});
+  final BootstrapTrip trip;
+
+  const _NextStopHero({required this.currentStop, required this.trip});
 
   @override
   Widget build(BuildContext context) {
@@ -666,8 +864,9 @@ class _NextStopHero extends StatelessWidget {
       return Container(
         padding: const EdgeInsets.all(_T.lg),
         decoration: BoxDecoration(
-          color: _T.alpha(_T.success, 0.1),
+          color: _T.alpha(_T.success, 0.08),
           borderRadius: BorderRadius.circular(_T.rMd),
+          border: Border.all(color: _T.alpha(_T.success, 0.15)),
         ),
         child: const Row(
           children: [
@@ -678,7 +877,7 @@ class _NextStopHero extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Paradas completadas',
+                    '¡Todas las paradas completas!',
                     style: TextStyle(
                       fontSize: _T.fBodyLg,
                       fontWeight: FontWeight.bold,
@@ -697,39 +896,155 @@ class _NextStopHero extends StatelessWidget {
       );
     }
 
+    final total = trip.totalStops ?? 0;
+    final done = trip.stopsProgress ?? 0;
+    final name =
+        currentStop!.name.isNotEmpty ? currentStop!.name : 'Sin nombre';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            const Icon(Icons.location_on, color: _T.danger, size: 20),
-            const SizedBox(width: _T.sm),
-            const Text(
-              'PRÓXIMA PARADA',
-              style: TextStyle(
-                fontSize: _T.fCaption,
-                fontWeight: FontWeight.w800,
-                color: _T.neutral,
-                letterSpacing: 1,
+            const _NextStopBadge(),
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: _T.alpha(_T.neutral, 0.06),
+                borderRadius: BorderRadius.circular(50),
+              ),
+              child: Text(
+                '$done de $total',
+                style: const TextStyle(
+                  fontSize: _T.fCaption,
+                  fontWeight: FontWeight.w800,
+                  color: _T.neutral,
+                ),
               ),
             ),
           ],
         ),
-        const SizedBox(height: _T.sm),
+        const SizedBox(height: _T.md),
         Text(
-          currentStop!.name,
+          name,
           style: const TextStyle(
             fontSize: _T.fHeadline,
             fontWeight: FontWeight.w900,
             color: _T.primary,
+            letterSpacing: -0.5,
           ),
         ),
-        if (currentStop!.address.isNotEmpty)
-          Text(
-            currentStop!.address,
-            style: const TextStyle(fontSize: _T.fBody, color: _T.neutral),
+        if (currentStop!.address.isNotEmpty) ...[
+          const SizedBox(height: _T.xs),
+          Row(
+            children: [
+              const Icon(
+                Icons.location_on_outlined,
+                size: 16,
+                color: _T.neutral,
+              ),
+              const SizedBox(width: _T.xs),
+              Expanded(
+                child: Text(
+                  currentStop!.address,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: _T.fBody,
+                    color: _T.neutral,
+                  ),
+                ),
+              ),
+            ],
           ),
+        ],
+
+        const SizedBox(height: _T.md),
+        _ProgressBar(done: done, total: total),
       ],
+    );
+  }
+}
+
+class _ProgressBar extends StatelessWidget {
+  final int done;
+  final int total;
+
+  const _ProgressBar({required this.done, required this.total});
+
+  @override
+  Widget build(BuildContext context) {
+    // FIX #1: clamp().toDouble()
+    final double progress =
+        total <= 0 ? 0.0 : (done / total).clamp(0.0, 1.0).toDouble();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text(
+              'Progreso del viaje',
+              style: TextStyle(
+                fontSize: _T.fCaption,
+                fontWeight: FontWeight.w700,
+                color: _T.neutral,
+              ),
+            ),
+            const Spacer(),
+            Text(
+              '${(progress * 100).round()}%',
+              style: const TextStyle(
+                fontSize: _T.fCaption,
+                fontWeight: FontWeight.w900,
+                color: _T.accent,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: _T.xs),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(50),
+          child: LinearProgressIndicator(
+            value: progress,
+            minHeight: 5,
+            backgroundColor: _T.alpha(_T.neutral, 0.1),
+            valueColor: const AlwaysStoppedAnimation(_T.accent),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _NextStopBadge extends StatelessWidget {
+  const _NextStopBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: _T.warningLight,
+        borderRadius: BorderRadius.circular(50),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.navigation_rounded, size: 12, color: _T.warning),
+          const SizedBox(width: 4),
+          Text(
+            'PRÓXIMA PARADA',
+            style: TextStyle(
+              fontSize: _T.fCaption,
+              fontWeight: FontWeight.w900,
+              color: _T.warning,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -739,55 +1054,62 @@ class _NextStopHero extends StatelessWidget {
 class _MetricsGrid extends StatelessWidget {
   final ValueNotifier<double?> speedNotifier;
   final BootstrapCurrentStop? currentStop;
+  final bool hasGps;
 
   const _MetricsGrid({
     required this.speedNotifier,
     required this.currentStop,
+    required this.hasGps,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          flex: 2,
-          child: ValueListenableBuilder<double?>(
-            valueListenable: speedNotifier,
-            builder: (context, spd, _) {
-              final noData = spd == null;
-              return _MetricCard(
-                label: 'Velocidad',
-                value: noData ? '--' : spd.toStringAsFixed(0),
-                unit: noData ? '' : 'km/h',
-                icon: Icons.speed,
-                isPrimary: true,
-              );
-            },
+    final hasEta = currentStop?.etaMinutes != null;
+    final hasDist = currentStop?.distanceKm != null;
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            flex: 2,
+            child: ValueListenableBuilder<double?>(
+              valueListenable: speedNotifier,
+              builder: (context, spd, _) {
+                final noData = !hasGps || spd == null;
+                return _MetricCard(
+                  label: 'Velocidad',
+                  value: noData ? '--' : spd.toStringAsFixed(0),
+                  unit: noData ? '' : 'km/h',
+                  icon: Icons.speed_rounded,
+                  isPrimary: true,
+                  muted: noData,
+                );
+              },
+            ),
           ),
-        ),
-        const SizedBox(width: _T.sm),
-        Expanded(
-          child: _MetricCard(
-            label: 'ETA',
-            value: currentStop?.etaMinutes != null
-                ? '${currentStop!.etaMinutes}'
-                : '--',
-            unit: currentStop?.etaMinutes != null ? 'min' : '',
-            icon: Icons.timer,
+          const SizedBox(width: _T.sm),
+          Expanded(
+            child: _MetricCard(
+              label: 'ETA',
+              value: hasEta ? '${currentStop!.etaMinutes}' : '--',
+              unit: hasEta ? 'min' : '',
+              icon: Icons.timer_outlined,
+              muted: !hasEta,
+            ),
           ),
-        ),
-        const SizedBox(width: _T.sm),
-        Expanded(
-          child: _MetricCard(
-            label: 'Dist.',
-            value: currentStop?.distanceKm != null
-                ? currentStop!.distanceKm!.toStringAsFixed(1)
-                : '--',
-            unit: currentStop?.distanceKm != null ? 'km' : '',
-            icon: Icons.map,
+          const SizedBox(width: _T.sm),
+          Expanded(
+            child: _MetricCard(
+              label: 'Distancia',
+              value: hasDist ? currentStop!.distanceKm!.toStringAsFixed(1) : '--',
+              unit: hasDist ? 'km' : '',
+              icon: Icons.map_outlined,
+              muted: !hasDist,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -798,6 +1120,7 @@ class _MetricCard extends StatelessWidget {
   final String unit;
   final IconData icon;
   final bool isPrimary;
+  final bool muted;
 
   const _MetricCard({
     required this.label,
@@ -805,41 +1128,152 @@ class _MetricCard extends StatelessWidget {
     required this.unit,
     required this.icon,
     this.isPrimary = false,
+    this.muted = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final color = isPrimary ? _T.accent : _T.primary;
+    final color = muted
+        ? _T.neutral
+        : isPrimary
+            ? _T.accent
+            : _T.primary;
 
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: _T.sm, vertical: _T.md),
+      decoration: BoxDecoration(
+        color: muted
+            ? _T.alpha(_T.neutral, 0.05)
+            : isPrimary
+                ? _T.alpha(_T.accent, 0.05)
+                : _T.alpha(_T.neutral, 0.05),
+        borderRadius: BorderRadius.circular(_T.rMd),
+        border: Border.all(
+          color: isPrimary && !muted
+              ? _T.alpha(_T.accent, 0.2)
+              : Colors.transparent,
+        ),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 18, color: _T.alpha(color, 0.65)),
+          const SizedBox(height: _T.xs),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: isPrimary ? 26 : 19,
+                    fontWeight: FontWeight.w900,
+                    color: color,
+                  ),
+                ),
+                if (unit.isNotEmpty) ...[
+                  const SizedBox(width: 3),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text(
+                      unit,
+                      style: TextStyle(
+                        fontSize: _T.fCaption,
+                        fontWeight: FontWeight.w700,
+                        color: _T.alpha(color, 0.65),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+          // FIX #5: Label siempre visible
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: _T.fCaption,
+              fontWeight: FontWeight.w700,
+              color: _T.alpha(color, 0.65),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ==================== CUSTOMER CARD ====================
+
+class _CustomerCard extends StatelessWidget {
+  final String customerName;
+
+  const _CustomerCard({required this.customerName});
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(_T.md),
       decoration: BoxDecoration(
-        color: isPrimary ? _T.alpha(_T.accent, 0.05) : _T.bg,
+        color: _T.alpha(_T.neutral, 0.04),
         borderRadius: BorderRadius.circular(_T.rMd),
-        border: isPrimary
-            ? Border.all(color: _T.alpha(_T.accent, 0.2))
-            : null,
+        border: Border.all(color: Colors.black.withValues(alpha: 0.03)),
       ),
-      child: Column(
+      child: Row(
         children: [
-          Icon(icon, size: 16, color: _T.alpha(color, 0.6)),
-          const SizedBox(height: _T.xs),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: isPrimary ? 28 : 20,
-              fontWeight: FontWeight.w900,
-              color: color,
-            ),
-          ),
-          if (unit.isNotEmpty)
-            Text(
-              unit,
-              style: TextStyle(
-                fontSize: 10,
-                color: _T.alpha(color, 0.6),
+          CircleAvatar(
+            radius: 20,
+            backgroundColor: _T.alpha(_T.accent, 0.1),
+            child: Text(
+              customerName.isNotEmpty ? customerName[0].toUpperCase() : '?',
+              style: const TextStyle(
+                fontSize: _T.fTitle,
+                fontWeight: FontWeight.w900,
+                color: _T.accent,
               ),
             ),
+          ),
+          const SizedBox(width: _T.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  customerName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: _T.fBodyLg,
+                    fontWeight: FontWeight.w700,
+                    color: _T.primary,
+                  ),
+                ),
+                const SizedBox(height: 1),
+                const Text(
+                  'Cliente asignado',
+                  style: TextStyle(
+                    fontSize: _T.fCaption,
+                    color: _T.neutral,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Opacity(
+            opacity: 0.45,
+            child: IconButton(
+              onPressed: null,
+              icon: const Icon(Icons.call_rounded, color: _T.success),
+              style: IconButton.styleFrom(
+                backgroundColor: _T.alpha(_T.success, 0.1),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -855,91 +1289,73 @@ class _ActionSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (currentStop == null) {
-      return const SizedBox.shrink();
-    }
+    if (currentStop == null) return const SizedBox.shrink();
 
     return Column(
       children: [
         Row(
           children: [
             Expanded(
-              child: _SecondaryButton(
-                icon: Icons.qr_code_scanner,
-                label: 'Escanear',
-                onTap: null,
+              child: Tooltip(
+                message: 'Próximamente',
+                child: _SecondaryButton(
+                  icon: Icons.qr_code_scanner,
+                  label: 'Escanear',
+                  onTap: null,
+                ),
               ),
             ),
-            const SizedBox(width: _T.md),
+            const SizedBox(width: _T.sm),
             Expanded(
-              flex: 2,
-              child: _PrimaryButton(
-                label: 'Confirmar llegada',
-                onTap: () => _confirmArrival(context),
+              child: Tooltip(
+                message: 'Próximamente',
+                child: _SecondaryButton(
+                  icon: Icons.navigation_rounded,
+                  label: 'Navegar',
+                  onTap: null,
+                ),
               ),
             ),
           ],
         ),
+        const SizedBox(height: _T.md),
+        // FIX #8: Confirmar deshabilitado sin backend
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: _PrimaryButton(
+            label: 'Confirmar llegada',
+            onTap: null,
+          ),
+        ),
       ],
-    );
-  }
-
-  void _confirmArrival(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Confirmar llegada'),
-        content: const Text('¿Confirmás que llegaste al destino?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: const Text('Llegada confirmada'),
-                  backgroundColor: _T.success,
-                  behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(_T.rMd),
-                  ),
-                ),
-              );
-            },
-            style: FilledButton.styleFrom(backgroundColor: _T.success),
-            child: const Text('Confirmar'),
-          ),
-        ],
-      ),
     );
   }
 }
 
 class _PrimaryButton extends StatelessWidget {
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   const _PrimaryButton({required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return ElevatedButton(
+    return FilledButton.icon(
       onPressed: onTap,
-      style: ElevatedButton.styleFrom(
+      icon: const Icon(Icons.check_circle_rounded),
+      label: Text(
+        label,
+        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+      ),
+      style: FilledButton.styleFrom(
         backgroundColor: _T.success,
         foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(vertical: 16),
+        disabledBackgroundColor: _T.alpha(_T.success, 0.35),
+        disabledForegroundColor: Colors.white70,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(_T.rMd),
         ),
-        elevation: 0,
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
       ),
     );
   }
@@ -962,16 +1378,18 @@ class _SecondaryButton extends StatelessWidget {
 
     return Opacity(
       opacity: enabled ? 1.0 : 0.45,
-      child: OutlinedButton.icon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 18),
-        label: Text(label),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: _T.primary,
-          side: const BorderSide(color: Colors.black12),
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(_T.rMd),
+      child: SizedBox(
+        height: 50,
+        child: OutlinedButton.icon(
+          onPressed: onTap,
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: _T.primary,
+            side: const BorderSide(color: Colors.black12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(_T.rMd),
+            ),
           ),
         ),
       ),
@@ -1028,10 +1446,9 @@ class _LoadingView extends StatelessWidget {
 }
 
 class _ErrorView extends StatelessWidget {
-  final Object error;
   final VoidCallback onRetry;
 
-  const _ErrorView({required this.error, required this.onRetry});
+  const _ErrorView({required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -1055,10 +1472,16 @@ class _ErrorView extends StatelessWidget {
               ),
             ),
             const SizedBox(height: _T.sm),
-            Text(
-              error.toString(),
+            // FIX #10: Mensaje amigable, no técnico
+            const Text(
+              'No pudimos cargar la información del viaje. '
+              'Verifica tu conexión e inténtalo nuevamente.',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: _T.fBody, color: _T.neutral),
+              style: TextStyle(
+                fontSize: _T.fBody,
+                color: _T.neutral,
+                height: 1.4,
+              ),
             ),
             const SizedBox(height: _T.xl),
             FilledButton.icon(
