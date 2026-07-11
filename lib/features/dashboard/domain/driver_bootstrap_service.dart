@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:tracking_system_app/core/config/supabase_config.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap.dart';
 
@@ -110,6 +111,7 @@ class DriverBootstrapService {
 
     BootstrapTrip? trip;
     BootstrapChecklist? checklist;
+    BootstrapCurrentStop? currentStop;
 
     if (viajesConductor.isNotEmpty) {
       final viajeId = viajesConductor.first['viaje_id'] as String;
@@ -125,24 +127,94 @@ class DriverBootstrapService {
 
       if (viajes.isNotEmpty) {
         final v = viajes.first;
+        final tripId = v['id'] as String;
+
+        // Cargar checkpoints para calcular progreso
+        final checkpoints = await SupabaseConfig.client
+            .from('operations_checkpoints')
+            .select('id, estado, parada_id')
+            .eq('viaje_id', tripId)
+            .filter('deleted_at', 'is', null);
+
+        final totalStops = checkpoints.length;
+        final completedStops = checkpoints.where((c) => c['estado'] == 'completado').length;
+        final progressPercent = totalStops > 0 ? completedStops / totalStops : 0.0;
+
+        // Cargar currentStop (primer checkpoint incompleto)
+        try {
+          final pendingCheckpoints = checkpoints
+              .where((c) => c['estado'] == 'pendiente' || c['estado'] == 'llego')
+              .toList();
+
+          if (pendingCheckpoints.isNotEmpty) {
+            final cp = pendingCheckpoints.first;
+            final paradaId = cp['parada_id'] as String?;
+
+            String stopName = 'Sin nombre';
+            String stopAddress = '';
+            double? lat;
+            double? lng;
+            int? etaMinutes;
+
+            if (paradaId != null) {
+              final paradas = await SupabaseConfig.client
+                  .from('operations_paradas')
+                  .select('nombre, direccion, latitud, longitud, eta_minutos, orden')
+                  .eq('id', paradaId)
+                  .filter('deleted_at', 'is', null)
+                  .limit(1);
+
+              if (paradas.isNotEmpty) {
+                final p = paradas.first;
+                stopName = p['nombre'] as String? ?? 'Sin nombre';
+                stopAddress = p['direccion'] as String? ?? '';
+                lat = (p['latitud'] as num?)?.toDouble();
+                lng = (p['longitud'] as num?)?.toDouble();
+                etaMinutes = p['eta_minutos'] as int?;
+              }
+            }
+
+            currentStop = BootstrapCurrentStop(
+              id: paradaId ?? cp['id'] as String,
+              checkpointId: cp['id'] as String,
+              name: stopName,
+              address: stopAddress,
+              lat: lat,
+              lng: lng,
+              etaMinutes: etaMinutes,
+              status: cp['estado'] as String,
+            );
+          }
+        } catch (e) {
+          debugPrint('Fallback: error cargando currentStop: $e');
+        }
+
+        // Paquetes restantes
+        final paquetesRestantes = await SupabaseConfig.client
+            .from('operations_viajes_paquetes')
+            .select('id')
+            .eq('viaje_id', tripId)
+            .filter('deleted_at', 'is', null)
+            .neq('estado', 'entregado');
+
         trip = BootstrapTrip(
-          id: v['id'] as String,
+          id: tripId,
           code: v['codigo'] as String,
           status: v['estado'] as String,
           departureTime: v['hora_real_salida']?.toString(),
           estimatedArrival: v['hora_programada_llegada']?.toString(),
           totalDistance: (v['km_estimados'] as num?)?.toDouble(),
           remainingDistance: (v['distancia_real_km'] as num?)?.toDouble(),
-          stopsProgress: null,
-          totalStops: null,
-          packagesRemaining: null,
-          progressPercent: null,
+          stopsProgress: completedStops,
+          totalStops: totalStops,
+          packagesRemaining: paquetesRestantes.length,
+          progressPercent: progressPercent,
         );
 
         final checklists = await SupabaseConfig.client
             .from('fleet_checklists')
             .select()
-            .eq('viaje_id', viajeId)
+            .eq('viaje_id', tripId)
             .eq('tipo', 'pre_viaje')
             .filter('deleted_at', 'is', null)
             .limit(1);
@@ -198,7 +270,7 @@ class DriverBootstrapService {
       vehicle: vehicle,
       trip: trip,
       checklist: checklist,
-      currentStop: null,
+      currentStop: currentStop,
       device: const BootstrapDevice(),
     );
   }

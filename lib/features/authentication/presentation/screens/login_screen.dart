@@ -3,6 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'package:tracking_system_app/core/config/supabase_config.dart';
 
 // ═════════════════════════════════════════════════════════════
 // DESIGN SYSTEM
@@ -748,8 +751,50 @@ class _LoginScreenState extends State<LoginScreen>
     });
 
     try {
-      // Reemplazar por tu servicio real de autenticación.
-      await Future.delayed(const Duration(seconds: 2));
+      final email = _emailController.text.trim();
+      final password = _passwordController.text;
+
+      debugPrint('═══════════════════════════════════════');
+      debugPrint('🔐 LOGIN ATTEMPT');
+      debugPrint('   Email: $email');
+      debugPrint('═══════════════════════════════════════');
+
+      // Autenticación real con Supabase
+      final response = await SupabaseConfig.client.auth.signInWithPassword(
+        email: email,
+        password: password,
+      );
+
+      final user = response.user;
+      if (user == null) {
+        throw Exception('No se pudo obtener el usuario después del login');
+      }
+
+      debugPrint('✅ LOGIN EXITOSO');
+      debugPrint('   auth_user_id: ${user.id}');
+      debugPrint('   email: ${user.email}');
+
+      // Verificar que el usuario existe en core_usuarios
+      final coreUser = await SupabaseConfig.client
+          .from('core_usuarios')
+          .select('id, auth_user_id, email, nombre, apellido, activo, empresa_id')
+          .eq('auth_user_id', user.id)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+
+      if (coreUser == null) {
+        debugPrint('⚠️ Usuario no encontrado en core_usuarios');
+        throw Exception('Tu cuenta no está registrada en el sistema. Contacta al administrador.');
+      }
+
+      debugPrint('   core_usuarios_id: ${coreUser['id']}');
+      debugPrint('   nombre: ${coreUser['nombre']} ${coreUser['apellido']}');
+      debugPrint('   activo: ${coreUser['activo']}');
+      debugPrint('   empresa_id: ${coreUser['empresa_id']}');
+
+      if (coreUser['activo'] != true) {
+        throw Exception('Tu cuenta está inactiva. Contacta al administrador.');
+      }
 
       if (!mounted) return;
 
@@ -757,14 +802,29 @@ class _LoginScreenState extends State<LoginScreen>
 
       HapticFeedback.heavyImpact();
       context.go('/dashboard');
+    } on AuthException catch (e) {
+      debugPrint('❌ AuthException: ${e.message}');
+      debugPrint('   statusCode: ${e.statusCode}');
+
+      if (!mounted) return;
+
+      String msg = 'No pudimos iniciar sesión. Verifica tus credenciales e inténtalo nuevamente.';
+      if (e.message.toLowerCase().contains('invalid login credentials')) {
+        msg = 'Email o contraseña incorrectos.';
+      } else if (e.message.toLowerCase().contains('email not confirmed')) {
+        msg = 'Debes confirmar tu email antes de iniciar sesión.';
+      }
+      _showErrorMessage(msg);
     } catch (error, stackTrace) {
-      debugPrint('Login error: $error');
+      debugPrint('❌ Login error: $error');
       debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) return;
 
       _showErrorMessage(
-        'No pudimos iniciar sesión. Verifica tus credenciales e inténtalo nuevamente.',
+        error.toString().contains('Exception:')
+            ? error.toString().replaceAll('Exception: ', '')
+            : 'No pudimos iniciar sesión. Verifica tus credenciales e inténtalo nuevamente.',
       );
     } finally {
       if (mounted) {
