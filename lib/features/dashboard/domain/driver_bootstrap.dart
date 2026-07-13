@@ -203,6 +203,9 @@ class BootstrapTrip {
   final int? totalStops;
   final int? packagesRemaining;
   final double? progressPercent;
+  final String? origin;
+  final String? destination;
+  final String? routeName;
 
   const BootstrapTrip({
     required this.id,
@@ -216,6 +219,9 @@ class BootstrapTrip {
     this.totalStops,
     this.packagesRemaining,
     this.progressPercent,
+    this.origin,
+    this.destination,
+    this.routeName,
   });
 
   factory BootstrapTrip.fromJson(Map<String, dynamic> json) {
@@ -239,6 +245,9 @@ class BootstrapTrip {
       progressPercent:
           (json['progressPercent'] ?? json['progress_percent'] as num?)
               ?.toDouble(),
+      origin: json['origin'] as String?,
+      destination: json['destination'] as String?,
+      routeName: json['routeName'] as String?,
     );
   }
 }

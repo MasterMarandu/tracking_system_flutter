@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:tracking_system_app/core/config/supabase_config.dart';
+import 'package:tracking_system_app/core/services/current_trip_service.dart';
 import 'package:tracking_system_app/core/services/navigation_service.dart';
 import 'package:tracking_system_app/features/dashboard/providers/bootstrap_provider.dart';
 
@@ -76,101 +77,52 @@ class TripData {
   });
 }
 
-// ==================== REPOSITORY (1 SOLA CONSULTA) ====================
+// ==================== REPOSITORY (REUTILIZA CurrentTripService) ====================
 
 class TripsRepository {
   final SupabaseClient _client;
   TripsRepository(this._client);
 
   Future<List<TripData>> fetchTrips() async {
-    final user = _client.auth.currentUser;
-    if (user == null) throw Exception('No hay sesión activa');
+    // Usa la misma consulta que el Dashboard
+    final activeTrips = await CurrentTripService.instance.fetchAllTrips();
 
-    final coreUser = await _client
-        .from('core_usuarios')
-        .select('id')
-        .eq('auth_user_id', user.id)
-        .filter('deleted_at', 'is', null)
-        .maybeSingle();
-    if (coreUser == null) return [];
-
-    final cond = await _client
-        .from('fleet_conductores')
-        .select('id, licencia')
-        .eq('usuario_id', coreUser['id'])
-        .filter('deleted_at', 'is', null)
-        .maybeSingle();
-    if (cond == null) return [];
-
-    // CONSULTA MAESTRA: viajes + rutas + vehículos + checkpoints + paquetes en 1 solo viaje de red
-    final data = await _client
-        .from('operations_viajes_conductores')
-        .select('''
-          viaje:operations_viajes!inner (
-            id, codigo, estado, hora_real_salida, hora_programada_llegada, km_estimados,
-            ruta:operations_rutas (origen, destino, nombre),
-            vehiculos:operations_viajes_vehiculos ( v:fleet_vehiculos (matricula, marca, modelo) ),
-            checkpoints:operations_checkpoints ( estado ),
-            paquetes:operations_viajes_paquetes ( id, estado )
-          )
-        ''')
-        .eq('conductor_id', cond['id'])
-        .filter('deleted_at', 'is', null)
-        .order('created_at', ascending: false);
-
-    return (data as List).map((item) {
-      final v = item['viaje'] as Map<String, dynamic>;
-      final ruta = v['ruta'] as Map<String, dynamic>?;
-      final checkpoints = v['checkpoints'] as List? ?? [];
-      final paquetes = v['paquetes'] as List? ?? [];
-      final vehs = v['vehiculos'] as List? ?? [];
-
-      final totalStops = checkpoints.length;
-      final doneStops =
-          checkpoints.where((c) => c['estado'] == 'completado').length;
-      final pendingPkgs =
-          paquetes.where((p) => p['estado'] != 'entregado').length;
-
-      String vehicleText = 'Sin asignar';
-      if (vehs.isNotEmpty) {
-        final vh = vehs.first['v'] as Map<String, dynamic>?;
-        if (vh != null) {
-          vehicleText = [
-            vh['matricula'],
-            vh['marca'],
-            vh['modelo'],
-          ].where((e) => e != null && (e as String).isNotEmpty).join(' · ');
-        }
-      }
-
-      final km = (v['km_estimados'] as num?)?.toDouble();
-      final estadoStr = v['estado'] as String? ?? 'programado';
+    return activeTrips.map((t) {
+      final km = t.totalDistance;
+      final estadoStr = t.status;
 
       return TripData(
-        id: v['id'] as String,
-        code: v['codigo'] ?? '--',
-        origin: ruta?['origen'] as String? ?? 'Origen',
-        destination: ruta?['destino'] as String? ?? 'Destino',
-        destinationDetail: ruta?['nombre'] as String?,
-        packages: pendingPkgs,
-        progress: totalStops > 0
-            ? (doneStops / totalStops).clamp(0.0, 1.0).toDouble()
+        id: t.id,
+        code: t.code,
+        origin: t.origin ?? 'Origen',
+        destination: t.destination ?? 'Destino',
+        destinationDetail: t.routeName,
+        packages: t.pendingPackages,
+        progress: t.totalStops > 0
+            ? (t.completedStops / t.totalStops).clamp(0.0, 1.0).toDouble()
             : null,
         distance: km != null ? '${km.toStringAsFixed(0)} km' : '--',
-        eta: _formatEta(estadoStr, v['hora_programada_llegada'] as String?),
-        vehicle: vehicleText,
-        driver: cond['licencia'] ?? '--',
-        stops: totalStops,
-        completedStops: doneStops,
+        eta: _formatEta(estadoStr, t.estimatedArrival),
+        vehicle: _buildVehicleText(t.vehiclePlate, t.vehicleBrand, t.vehicleModel),
+        driver: '--',
+        stops: t.totalStops,
+        completedStops: t.completedStops,
         status: _mapStatus(estadoStr),
-        departureTime: v['hora_real_salida'] != null
-            ? DateTime.tryParse(v['hora_real_salida'] as String)
+        departureTime: t.departureTime != null
+            ? DateTime.tryParse(t.departureTime!)
             : null,
-        estimatedArrival: v['hora_programada_llegada'] != null
-            ? DateTime.tryParse(v['hora_programada_llegada'] as String)
+        estimatedArrival: t.estimatedArrival != null
+            ? DateTime.tryParse(t.estimatedArrival!)
             : null,
       );
     }).toList();
+  }
+
+  String _buildVehicleText(String? plate, String? brand, String? model) {
+    final parts = [plate, brand, model]
+        .where((e) => e != null && e.isNotEmpty)
+        .toList();
+    return parts.isEmpty ? 'Sin asignar' : parts.join(' · ');
   }
 
   TripStatus _mapStatus(String s) => switch (s) {
