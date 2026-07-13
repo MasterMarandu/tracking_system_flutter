@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:tracking_system_app/core/services/gps_service.dart';
 import 'package:tracking_system_app/core/services/location_service.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap.dart';
 import 'package:tracking_system_app/features/dashboard/providers/bootstrap_provider.dart';
+import 'package:tracking_system_app/features/tracking/domain/delivery_service.dart';
 
 // ==================== HELPERS ====================
 
@@ -781,7 +783,7 @@ class _BottomSheet extends StatelessWidget {
           ],
 
           const SizedBox(height: _T.xl),
-          _ActionSection(currentStop: currentStop),
+          _ActionSection(currentStop: currentStop, trip: trip),
         ],
       ),
     );
@@ -1282,13 +1284,14 @@ class _CustomerCard extends StatelessWidget {
 
 // ==================== ACTION SECTION ====================
 
-class _ActionSection extends StatelessWidget {
+class _ActionSection extends ConsumerWidget {
   final BootstrapCurrentStop? currentStop;
+  final BootstrapTrip trip;
 
-  const _ActionSection({required this.currentStop});
+  const _ActionSection({required this.currentStop, required this.trip});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     if (currentStop == null) return const SizedBox.shrink();
 
     return Column(
@@ -1296,42 +1299,347 @@ class _ActionSection extends StatelessWidget {
         Row(
           children: [
             Expanded(
-              child: Tooltip(
-                message: 'Próximamente',
-                child: _SecondaryButton(
-                  icon: Icons.qr_code_scanner,
-                  label: 'Escanear',
-                  onTap: null,
-                ),
+              child: _SecondaryButton(
+                icon: Icons.qr_code_scanner,
+                label: 'Escanear',
+                onTap: () => _handleScan(context),
               ),
             ),
             const SizedBox(width: _T.sm),
             Expanded(
-              child: Tooltip(
-                message: 'Próximamente',
-                child: _SecondaryButton(
-                  icon: Icons.navigation_rounded,
-                  label: 'Navegar',
-                  onTap: null,
-                ),
+              child: _SecondaryButton(
+                icon: Icons.phone_rounded,
+                label: 'Llamar',
+                onTap: currentStop!.customerName?.isNotEmpty == true
+                    ? () => _handleCall(context)
+                    : null,
               ),
             ),
           ],
         ),
         const SizedBox(height: _T.md),
-        // FIX #8: Confirmar deshabilitado sin backend
         SizedBox(
           width: double.infinity,
           height: 52,
           child: _PrimaryButton(
             label: 'Confirmar llegada',
-            onTap: null,
+            onTap: () => _handleConfirmArrival(context, ref),
           ),
         ),
       ],
     );
   }
+
+  Future<void> _handleScan(BuildContext context) async {
+    // Show scan dialog placeholder
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => _ScanDialog(),
+    );
+
+    if (result != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Código escaneado: $result'),
+          backgroundColor: _T.success,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleCall(BuildContext context) async {
+    // For now, just show a placeholder
+    // In real app, would use url_launcher with customer phone
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Llamando a ${currentStop!.customerName ?? "cliente"}...'),
+          backgroundColor: _T.accent,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleConfirmArrival(BuildContext context, WidgetRef ref) async {
+    final otpCode = await showDialog<String>(
+      context: context,
+      builder: (ctx) => _OtpDialog(),
+    );
+
+    if (otpCode == null || otpCode.isEmpty) return;
+
+    if (!context.mounted) return;
+
+    // Show loading
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      useRootNavigator: true,
+      builder: (_) => const Center(
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Verificando entrega...'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    // Try to verify OTP first
+    final deliveryService = DeliveryService.instance;
+    DeliveryResult result;
+
+    if (currentStop!.checkpointId != null) {
+      result = await deliveryService.verifyOtp(
+        checkpointId: currentStop!.checkpointId!,
+        otpCode: otpCode,
+      );
+
+      // If OTP verification fails or not configured, try complete_delivery
+      if (!result.success && result.error?.contains('not configured') == true) {
+        result = await deliveryService.completeDelivery(
+          checkpointId: currentStop!.checkpointId!,
+          tripId: trip.id,
+          stopId: currentStop!.id,
+          outcome: 'complete',
+        );
+      }
+    } else {
+      result = const DeliveryResult(
+        success: false,
+        error: 'No checkpoint available',
+      );
+    }
+
+    if (!context.mounted) return;
+
+    // Dismiss loading — pop root navigator to remove dialog, not GoRouter route
+    Navigator.of(context, rootNavigator: true).pop();
+
+    // Show result
+    if (result.success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.tripCompleted
+              ? '¡Viaje completado!'
+              : 'Entrega confirmada exitosamente'),
+          backgroundColor: _T.success,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      // Refresh bootstrap to update UI
+      ref.invalidate(bootstrapProvider);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.error ?? 'Error al confirmar entrega'),
+          backgroundColor: _T.danger,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
 }
+
+// ==================== OTP DIALOG ====================
+
+class _OtpDialog extends StatefulWidget {
+  @override
+  State<_OtpDialog> createState() => _OtpDialogState();
+}
+
+class _OtpDialogState extends State<_OtpDialog> {
+  final _controller = TextEditingController();
+  final _focusNode = FocusNode();
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode.requestFocus();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final code = _controller.text.trim();
+    if (code.isEmpty) {
+      setState(() => _error = 'Ingresa el código OTP');
+      return;
+    }
+    if (code.length < 4) {
+      setState(() => _error = 'El código debe tener al menos 4 caracteres');
+      return;
+    }
+    Navigator.of(context).pop(code);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(_T.rMd),
+      ),
+      title: Row(
+        children: [
+          const Icon(Icons.lock_outline_rounded, color: _T.accent),
+          const SizedBox(width: _T.sm),
+          const Text(
+            'Código OTP',
+            style: TextStyle(fontSize: _T.fTitle, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Ingresa el código de verificación proporcionado por el cliente:',
+            style: TextStyle(fontSize: _T.fBody, color: _T.neutral),
+          ),
+          const SizedBox(height: _T.lg),
+          TextField(
+            controller: _controller,
+            focusNode: _focusNode,
+            textAlign: TextAlign.center,
+            textInputAction: TextInputAction.go,
+            keyboardType: TextInputType.number,
+            style: const TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 8,
+            ),
+            decoration: InputDecoration(
+              hintText: '0000',
+              hintStyle: TextStyle(
+                color: _T.neutral.withValues(alpha: 0.3),
+                letterSpacing: 8,
+              ),
+              errorText: _error,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(_T.rMd),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(_T.rMd),
+                borderSide: const BorderSide(color: _T.accent, width: 2),
+              ),
+            ),
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(8),
+            ],
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          style: FilledButton.styleFrom(
+            backgroundColor: _T.accent,
+          ),
+          child: const Text('Verificar'),
+        ),
+      ],
+    );
+  }
+}
+
+// ==================== SCAN DIALOG ====================
+
+class _ScanDialog extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(_T.rMd),
+      ),
+      title: Row(
+        children: [
+          const Icon(Icons.qr_code_scanner, color: _T.accent),
+          const SizedBox(width: _T.sm),
+          const Text(
+            'Escanear código',
+            style: TextStyle(fontSize: _T.fTitle, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            height: 200,
+            decoration: BoxDecoration(
+              color: _T.alpha(_T.neutral, 0.05),
+              borderRadius: BorderRadius.circular(_T.rMd),
+              border: Border.all(color: _T.alpha(_T.neutral, 0.1)),
+            ),
+            child: const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.qr_code_scanner, size: 48, color: _T.neutral),
+                  SizedBox(height: _T.sm),
+                  Text(
+                    'Cámara no disponible\nen modo simulación',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: _T.fBody,
+                      color: _T.neutral,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: _T.lg),
+          const Text(
+            'En producción, se activará la cámara para escanear códigos de paquetes.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: _T.fCaption, color: _T.neutral),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () {
+            // Return a mock scanned code for testing
+            Navigator.of(context).pop('PKG-TEST-123');
+          },
+          style: FilledButton.styleFrom(
+            backgroundColor: _T.accent,
+          ),
+          child: const Text('Simular escaneo'),
+        ),
+      ],
+    );
+  }
+}
+
+// ==================== BUTTONS ====================
 
 class _PrimaryButton extends StatelessWidget {
   final String label;
