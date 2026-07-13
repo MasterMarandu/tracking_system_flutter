@@ -1,21 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:tracking_system_app/features/packages/domain/package.dart';
 
 class PackageDetailScreen extends StatelessWidget {
-  final String packageId;
+  final Package package;
 
-  const PackageDetailScreen({super.key, required this.packageId});
+  const PackageDetailScreen({super.key, required this.package});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(packageId),
+        title: Text(package.trackingNumber),
         actions: [
           IconButton(
             icon: const Icon(Icons.qr_code_scanner),
-            onPressed: () {
-              print('Scan pressed');
-            },
+            onPressed: () => debugPrint('Scan pressed'),
           ),
         ],
       ),
@@ -37,16 +36,16 @@ class PackageDetailScreen extends StatelessWidget {
   }
 
   Widget _buildPackageInfoSection(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Package Information',
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
+            'Información del paquete',
+            style: theme.textTheme.titleMedium
                 ?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 16),
@@ -55,16 +54,16 @@ class PackageDetailScreen extends StatelessWidget {
               Expanded(
                 child: _InfoTile(
                   icon: Icons.monitor_weight_outlined,
-                  label: 'Weight',
-                  value: '2.5 kg',
+                  label: 'Peso',
+                  value: package.weight,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: _InfoTile(
-                  icon: Icons.straighten,
-                  label: 'Dimensions',
-                  value: '30x20x15 cm',
+                  icon: Icons.inventory_2_outlined,
+                  label: 'Tipo',
+                  value: package.type ?? 'Estándar',
                 ),
               ),
             ],
@@ -74,55 +73,65 @@ class PackageDetailScreen extends StatelessWidget {
             children: [
               Expanded(
                 child: _InfoTile(
-                  icon: Icons.inventory_2_outlined,
-                  label: 'Type',
-                  value: 'Standard',
+                  icon: Icons.flag,
+                  label: 'Prioridad',
+                  value: package.priority.label,
+                  valueColor: package.priority.color,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: _InfoTile(
-                  icon: Icons.flag,
-                  label: 'Priority',
-                  value: 'High',
-                  valueColor: const Color(0xFFFF9800),
+                  icon: Icons.attach_money,
+                  label: 'Valor declarado',
+                  value: package.declaredValue != null
+                      ? 'S/ ${package.declaredValue!.toStringAsFixed(2)}'
+                      : 'N/A',
                 ),
               ),
             ],
           ),
+          if (package.isFragile) ...[
+            const SizedBox(height: 12),
+            Chip(
+              avatar: const Icon(Icons.warning_amber, size: 16),
+              label: const Text('Frágil'),
+              backgroundColor: Colors.red.withOpacity(0.1),
+            ),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildSenderRecipientSection(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Sender & Recipient',
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
+            'Remitente y Destinatario',
+            style: theme.textTheme.titleMedium
                 ?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 16),
           _ContactCard(
             icon: Icons.person_outline,
-            label: 'Sender',
-            name: 'ABC Company Inc.',
-            address: '100 Business Ave, Suite 500\nSan Francisco, CA 94105',
-            phone: '+1 (555) 123-4567',
+            label: 'Remitente',
+            name: package.senderName ?? 'Sin información',
+            address: '--',
+            phone: '--',
           ),
           const SizedBox(height: 12),
           _ContactCard(
             icon: Icons.person,
-            label: 'Recipient',
-            name: 'John Smith',
-            address: '123 Main Street, Apt 4B\nNew York, NY 10001',
-            phone: '+1 (555) 987-6543',
+            label: 'Destinatario',
+            name: package.recipientName ?? 'Sin información',
+            address: package.address ?? '--',
+            phone: '--',
           ),
         ],
       ),
@@ -130,37 +139,35 @@ class PackageDetailScreen extends StatelessWidget {
   }
 
   Widget _buildStatusTimeline(BuildContext context) {
-    final List<Map<String, dynamic>> timeline = [
-      {
-        'status': 'Order Created',
-        'time': 'Jul 5, 2026 - 09:00 AM',
-        'location': 'Online',
-        'isCompleted': true,
-      },
-      {
-        'status': 'Picked Up',
-        'time': 'Jul 5, 2026 - 02:30 PM',
-        'location': 'San Francisco, CA',
-        'isCompleted': true,
-      },
-      {
-        'status': 'In Transit',
-        'time': 'Jul 6, 2026 - 08:15 AM',
-        'location': 'Distribution Center, NV',
-        'isCompleted': true,
-      },
-      {
-        'status': 'Out for Delivery',
-        'time': 'Jul 8, 2026 - 07:00 AM',
-        'location': 'New York, NY',
-        'isCompleted': true,
-      },
-      {
-        'status': 'Delivered',
-        'time': 'Pending',
-        'location': 'New York, NY',
-        'isCompleted': false,
-      },
+    final theme = Theme.of(context);
+
+    // Build timeline from package status
+    final isDelivered = package.status == PackageStatus.delivered;
+    final isInTransit = package.status == PackageStatus.inTransit;
+
+    final List<_TimelineEntry> timeline = [
+      _TimelineEntry(
+        status: 'Paquete creado',
+        description: 'Tracking: ${package.trackingNumber}',
+        isCompleted: true,
+      ),
+      _TimelineEntry(
+        status: 'Asignado a viaje',
+        description: 'Listo para entrega',
+        isCompleted: true,
+      ),
+      _TimelineEntry(
+        status: 'En ruta',
+        description: package.address ?? 'Dirección de destino',
+        isCompleted: isInTransit || isDelivered,
+      ),
+      _TimelineEntry(
+        status: 'Entregado',
+        description: isDelivered
+            ? (package.actualDeliveryDate?.toString() ?? 'Completado')
+            : 'Pendiente',
+        isCompleted: isDelivered,
+      ),
     ];
 
     return Padding(
@@ -169,10 +176,8 @@ class PackageDetailScreen extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Status Timeline',
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
+            'Estado del paquete',
+            style: theme.textTheme.titleMedium
                 ?.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 16),
@@ -180,10 +185,9 @@ class PackageDetailScreen extends StatelessWidget {
             final item = timeline[index];
             final isLast = index == timeline.length - 1;
             return _TimelineItem(
-              status: item['status'],
-              time: item['time'],
-              location: item['location'],
-              isCompleted: item['isCompleted'],
+              status: item.status,
+              time: item.description,
+              isCompleted: item.isCompleted,
               isLast: isLast,
             );
           }),
@@ -193,6 +197,8 @@ class PackageDetailScreen extends StatelessWidget {
   }
 
   Widget _buildBottomActions(BuildContext context) {
+    if (package.status == PackageStatus.delivered) return const SizedBox.shrink();
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -210,21 +216,17 @@ class PackageDetailScreen extends StatelessWidget {
           children: [
             Expanded(
               child: OutlinedButton.icon(
-                onPressed: () {
-                  print('Report Issue pressed');
-                },
+                onPressed: () => debugPrint('Report Issue pressed'),
                 icon: const Icon(Icons.report_problem_outlined),
-                label: const Text('Report Issue'),
+                label: const Text('Reportar incidencia'),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton.icon(
-                onPressed: () {
-                  print('Mark as Delivered pressed');
-                },
+                onPressed: () => debugPrint('Mark as Delivered pressed'),
                 icon: const Icon(Icons.check_circle_outline),
-                label: const Text('Mark as Delivered'),
+                label: const Text('Marcar entregado'),
               ),
             ),
           ],
@@ -232,6 +234,18 @@ class PackageDetailScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class _TimelineEntry {
+  final String status;
+  final String description;
+  final bool isCompleted;
+
+  const _TimelineEntry({
+    required this.status,
+    required this.description,
+    required this.isCompleted,
+  });
 }
 
 class _InfoTile extends StatelessWidget {
@@ -249,16 +263,18 @@ class _InfoTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color:
-            Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
-        borderRadius: BorderRadius.circular(12),
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: scheme.outlineVariant.withOpacity(0.5)),
       ),
       child: Row(
         children: [
-          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
+          Icon(icon, size: 20, color: scheme.primary),
           const SizedBox(width: 8),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -266,10 +282,7 @@ class _InfoTile extends StatelessWidget {
               Text(
                 label,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withOpacity(0.6),
+                      color: scheme.onSurface.withOpacity(0.6),
                     ),
               ),
               Text(
@@ -304,83 +317,71 @@ class _ContactCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      color: Theme.of(context)
-          .colorScheme
-          .surfaceContainerHighest
-          .withOpacity(0.3),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
-        ),
+    final scheme = Theme.of(context).colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: scheme.outlineVariant.withOpacity(0.5)),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(icon,
-                  color: Theme.of(context).colorScheme.primary, size: 20),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: scheme.primaryContainer,
+              borderRadius: BorderRadius.circular(10),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withOpacity(0.6),
-                        ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    name,
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    address,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
+            child: Icon(icon, color: scheme.primary, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurface.withOpacity(0.6),
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  name,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  address,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                if (phone != '--') ...[
                   const SizedBox(height: 4),
                   Row(
                     children: [
                       Icon(Icons.phone,
-                          size: 14,
-                          color: Theme.of(context).colorScheme.primary),
+                          size: 14, color: scheme.primary),
                       const SizedBox(width: 4),
                       Text(
                         phone,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(
-                              color: Theme.of(context).colorScheme.primary,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: scheme.primary,
                             ),
                       ),
                     ],
                   ),
                 ],
-              ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -389,14 +390,12 @@ class _ContactCard extends StatelessWidget {
 class _TimelineItem extends StatelessWidget {
   final String status;
   final String time;
-  final String location;
   final bool isCompleted;
   final bool isLast;
 
   const _TimelineItem({
     required this.status,
     required this.time,
-    required this.location,
     required this.isCompleted,
     required this.isLast,
   });
@@ -454,17 +453,6 @@ class _TimelineItem extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     time,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: isCompleted
-                              ? Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withOpacity(0.6)
-                              : mutedColor,
-                        ),
-                  ),
-                  Text(
-                    location,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: isCompleted
                               ? Theme.of(context)

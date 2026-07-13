@@ -182,6 +182,41 @@ BEGIN
               AND deleted_at IS NULL
         )
         AND deleted_at IS NULL;
+
+        -- Update operations_viajes_paquetes.estado to 'entregado'
+        UPDATE operations_viajes_paquetes
+        SET
+            estado = 'entregado',
+            updated_at = NOW()
+        WHERE viaje_id = p_trip_id
+          AND parada_id = p_stop_id
+          AND deleted_at IS NULL;
+
+        -- Update shipping_envios if all their packages are now delivered
+        UPDATE shipping_envios se
+        SET
+            estado = 'entregado',
+            fecha_entrega = NOW(),
+            updated_at = NOW()
+        WHERE se.id IN (
+            SELECT DISTINCT sp.envio_id
+            FROM operations_viajes_paquetes ovp
+            JOIN shipping_paquetes sp ON ovp.paquete_id = sp.id
+            WHERE ovp.viaje_id = p_trip_id
+              AND ovp.parada_id = p_stop_id
+              AND ovp.deleted_at IS NULL
+              AND sp.deleted_at IS NULL
+              AND sp.envio_id IS NOT NULL
+        )
+        AND se.estado IN ('creado', 'preparando', 'despachado', 'en_ruta')
+        AND se.deleted_at IS NULL
+        AND NOT EXISTS (
+            SELECT 1
+            FROM shipping_paquetes sp2
+            WHERE sp2.envio_id = se.id
+              AND sp2.deleted_at IS NULL
+              AND (sp2.estado_actual IS DISTINCT FROM v_estado_entregado_id)
+        );
     END IF;
 
     -- 6. Log event

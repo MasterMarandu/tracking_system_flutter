@@ -10,6 +10,7 @@ import 'package:tracking_system_app/features/trips/presentation/screens/trip_det
 import 'package:tracking_system_app/features/tracking/presentation/screens/tracking_screen.dart';
 import 'package:tracking_system_app/features/packages/presentation/screens/packages_screen.dart';
 import 'package:tracking_system_app/features/packages/presentation/screens/package_detail_screen.dart';
+import 'package:tracking_system_app/features/packages/domain/packages_provider.dart';
 import 'package:tracking_system_app/features/delivery/presentation/screens/delivery_screen.dart';
 import 'package:tracking_system_app/features/incidents/presentation/screens/incidents_screen.dart';
 import 'package:tracking_system_app/features/notifications/presentation/screens/notifications_screen.dart';
@@ -88,9 +89,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               GoRoute(
                 path: ':packageId',
                 parentNavigatorKey: _rootNavigatorKey,
-                builder: (context, state) => PackageDetailScreen(
-                  packageId: state.pathParameters['packageId']!,
-                ),
+                builder: (context, state) {
+                  final packageId = state.pathParameters['packageId']!;
+                  final packages = ref.read(packagesProvider).valueOrNull ?? [];
+                  final pkg = packages.where((p) => p.id == packageId).firstOrNull;
+                  if (pkg == null) {
+                    return Scaffold(
+                      appBar: AppBar(title: Text('Paquete $packageId')),
+                      body: const Center(child: Text('Paquete no encontrado')),
+                    );
+                  }
+                  return PackageDetailScreen(package: pkg);
+                },
               ),
             ],
           ),

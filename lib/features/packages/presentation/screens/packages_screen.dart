@@ -1,175 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:tracking_system_app/features/packages/domain/package.dart';
+import 'package:tracking_system_app/features/packages/domain/packages_provider.dart';
 
-// ==================== MODELOS ====================
-
-enum PackageStatus { pending, inTransit, delivered }
-
-enum PackagePriority { urgent, high, normal, low }
-
-class PackageItem {
-  final String trackingNumber;
-  final String recipientName;
-  final String address;
-  final PackageStatus status;
-  final PackagePriority priority;
-  final String weight;
-  final String? notes;
-
-  const PackageItem({
-    required this.trackingNumber,
-    required this.recipientName,
-    required this.address,
-    required this.status,
-    required this.priority,
-    required this.weight,
-    this.notes,
-  });
-}
-
-// ==================== EXTENSIONES PARA UI ====================
-
-extension PackageStatusUI on PackageStatus {
-  String get label {
-    switch (this) {
-      case PackageStatus.pending:
-        return 'Pendiente';
-      case PackageStatus.inTransit:
-        return 'En tránsito';
-      case PackageStatus.delivered:
-        return 'Entregado';
-    }
-  }
-
-  Color color(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    switch (this) {
-      case PackageStatus.pending:
-        return Colors.orange;
-      case PackageStatus.inTransit:
-        return scheme.primary;
-      case PackageStatus.delivered:
-        return Colors.green;
-    }
-  }
-
-  IconData get icon {
-    switch (this) {
-      case PackageStatus.pending:
-        return Icons.schedule;
-      case PackageStatus.inTransit:
-        return Icons.local_shipping;
-      case PackageStatus.delivered:
-        return Icons.check_circle;
-    }
-  }
-}
-
-extension PackagePriorityUI on PackagePriority {
-  String get label {
-    switch (this) {
-      case PackagePriority.urgent:
-        return 'Urgente';
-      case PackagePriority.high:
-        return 'Alta';
-      case PackagePriority.normal:
-        return 'Normal';
-      case PackagePriority.low:
-        return 'Baja';
-    }
-  }
-
-  Color get color {
-    switch (this) {
-      case PackagePriority.urgent:
-        return Colors.red;
-      case PackagePriority.high:
-        return Colors.orange;
-      case PackagePriority.normal:
-        return Colors.blue;
-      case PackagePriority.low:
-        return Colors.green;
-    }
-  }
-
-  IconData get icon {
-    switch (this) {
-      case PackagePriority.urgent:
-        return Icons.priority_high;
-      case PackagePriority.high:
-        return Icons.arrow_upward;
-      case PackagePriority.normal:
-        return Icons.remove;
-      case PackagePriority.low:
-        return Icons.arrow_downward;
-    }
-  }
-}
-
-// ==================== SCREEN ====================
-
-class PackagesScreen extends StatefulWidget {
+class PackagesScreen extends ConsumerStatefulWidget {
   const PackagesScreen({super.key});
 
   @override
-  State<PackagesScreen> createState() => _PackagesScreenState();
+  ConsumerState<PackagesScreen> createState() => _PackagesScreenState();
 }
 
-class _PackagesScreenState extends State<PackagesScreen> {
+class _PackagesScreenState extends ConsumerState<PackagesScreen> {
   final _searchController = TextEditingController();
   PackageStatus? _selectedFilter;
   bool _isSearching = false;
-
-  // Datos simulados — en producción vendrían de un BLoC/Provider
-  final List<PackageItem> _packages = const [
-    PackageItem(
-      trackingNumber: 'PKG-2026-001',
-      recipientName: 'Juan García',
-      address: 'Av. Principal 123, Col. Centro',
-      status: PackageStatus.inTransit,
-      priority: PackagePriority.high,
-      weight: '2.5 kg',
-    ),
-    PackageItem(
-      trackingNumber: 'PKG-2026-002',
-      recipientName: 'María López',
-      address: 'Calle Roble 456, Col. Norte',
-      status: PackageStatus.pending,
-      priority: PackagePriority.normal,
-      weight: '1.2 kg',
-    ),
-    PackageItem(
-      trackingNumber: 'PKG-2026-003',
-      recipientName: 'Carlos Hernández',
-      address: 'Blvd. Pinos 789, Zona Industrial',
-      status: PackageStatus.delivered,
-      priority: PackagePriority.low,
-      weight: '5.0 kg',
-    ),
-    PackageItem(
-      trackingNumber: 'PKG-2026-004',
-      recipientName: 'Ana Martínez',
-      address: 'Calle Olmo 321, Col. Sur',
-      status: PackageStatus.inTransit,
-      priority: PackagePriority.urgent,
-      weight: '3.8 kg',
-    ),
-    PackageItem(
-      trackingNumber: 'PKG-2026-005',
-      recipientName: 'Roberto Sánchez',
-      address: 'Av. Arces 654, Col. Poniente',
-      status: PackageStatus.pending,
-      priority: PackagePriority.normal,
-      weight: '0.8 kg',
-    ),
-    PackageItem(
-      trackingNumber: 'PKG-2026-006',
-      recipientName: 'Laura Torres',
-      address: 'Calle Cedro 987, Col. Oriente',
-      status: PackageStatus.delivered,
-      priority: PackagePriority.high,
-      weight: '4.2 kg',
-    ),
-  ];
 
   @override
   void dispose() {
@@ -177,36 +22,29 @@ class _PackagesScreenState extends State<PackagesScreen> {
     super.dispose();
   }
 
-  List<PackageItem> get _filteredPackages {
-    var filtered = _packages;
+  List<Package> _filteredPackages(List<Package> all) {
+    var filtered = all;
 
-    // Filtro por estado
     if (_selectedFilter != null) {
       filtered = filtered.where((p) => p.status == _selectedFilter).toList();
     }
 
-    // Filtro por búsqueda
     if (_searchController.text.isNotEmpty) {
       final query = _searchController.text.toLowerCase();
       filtered = filtered.where((p) {
         return p.trackingNumber.toLowerCase().contains(query) ||
-            p.recipientName.toLowerCase().contains(query) ||
-            p.address.toLowerCase().contains(query);
+            (p.recipientName?.toLowerCase().contains(query) ?? false) ||
+            (p.address?.toLowerCase().contains(query) ?? false);
       }).toList();
     }
 
     return filtered;
   }
 
-  // Contadores para badges en filtros
-  int _countByStatus(PackageStatus? status) {
-    if (status == null) return _packages.length;
-    return _packages.where((p) => p.status == status).length;
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final packagesAsync = ref.watch(packagesProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -215,12 +53,10 @@ class _PackagesScreenState extends State<PackagesScreen> {
           IconButton(
             tooltip: _isSearching ? 'Cerrar búsqueda' : 'Buscar paquete',
             icon: Icon(_isSearching ? Icons.close : Icons.search),
-            onPressed: () {
-              setState(() {
-                _isSearching = !_isSearching;
-                if (!_isSearching) _searchController.clear();
-              });
-            },
+            onPressed: () => setState(() {
+              _isSearching = !_isSearching;
+              if (!_isSearching) _searchController.clear();
+            }),
           ),
           IconButton(
             tooltip: 'Más opciones',
@@ -229,25 +65,33 @@ class _PackagesScreenState extends State<PackagesScreen> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // Barra de búsqueda animada
-          _buildSearchBar(theme),
-
-          // Filtros horizontales con contadores
-          _buildFilters(theme),
-
-          // Contador de resultados
-          _buildResultsCount(theme),
-
-          // Lista de paquetes
-          Expanded(child: _buildPackageList(theme)),
-        ],
+      body: packagesAsync.when(
+        data: (packages) {
+          if (packages.isEmpty) {
+            return _buildEmptyState(theme, 'Sin paquetes',
+                'No hay paquetes asignados a tu viaje actual.');
+          }
+          return _buildBody(theme, packages);
+        },
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => _buildErrorState(theme, e.toString()),
       ),
     );
   }
 
-  // ==================== SEARCH BAR ====================
+  Widget _buildBody(ThemeData theme, List<Package> packages) {
+    final filtered = _filteredPackages(packages);
+
+    return Column(
+      children: [
+        _buildSearchBar(theme),
+        _buildFilters(theme, packages),
+        _buildResultsCount(theme, filtered.length),
+        Expanded(child: _buildPackageList(filtered)),
+      ],
+    );
+  }
+
   Widget _buildSearchBar(ThemeData theme) {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
@@ -288,8 +132,7 @@ class _PackagesScreenState extends State<PackagesScreen> {
     );
   }
 
-  // ==================== FILTERS ====================
-  Widget _buildFilters(ThemeData theme) {
+  Widget _buildFilters(ThemeData theme, List<Package> packages) {
     final filters = <PackageStatus?>[null, ...PackageStatus.values];
 
     return SizedBox(
@@ -302,7 +145,9 @@ class _PackagesScreenState extends State<PackagesScreen> {
         itemBuilder: (context, index) {
           final filter = filters[index];
           final isSelected = _selectedFilter == filter;
-          final count = _countByStatus(filter);
+          final count = filter != null
+              ? packages.where((p) => p.status == filter).length
+              : packages.length;
           final label = filter?.label ?? 'Todos';
 
           return FilterChip(
@@ -311,7 +156,6 @@ class _PackagesScreenState extends State<PackagesScreen> {
               children: [
                 Text(label),
                 const SizedBox(width: 6),
-                // Badge con contador
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 6,
@@ -349,9 +193,7 @@ class _PackagesScreenState extends State<PackagesScreen> {
     );
   }
 
-  // ==================== RESULTS COUNT ====================
-  Widget _buildResultsCount(ThemeData theme) {
-    final count = _filteredPackages.length;
+  Widget _buildResultsCount(ThemeData theme, int count) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
       child: Row(
@@ -365,7 +207,6 @@ class _PackagesScreenState extends State<PackagesScreen> {
             ),
           ),
           const Spacer(),
-          // Botón para escanear rápido
           TextButton.icon(
             onPressed: () {},
             icon: const Icon(Icons.qr_code_scanner, size: 18),
@@ -377,12 +218,10 @@ class _PackagesScreenState extends State<PackagesScreen> {
     );
   }
 
-  // ==================== PACKAGE LIST ====================
-  Widget _buildPackageList(ThemeData theme) {
-    final packages = _filteredPackages;
-
+  Widget _buildPackageList(List<Package> packages) {
     if (packages.isEmpty) {
-      return _buildEmptyState(theme);
+      return _buildEmptyState(Theme.of(context), 'Sin resultados',
+          'No se encontraron paquetes con los filtros aplicados.');
     }
 
     return ListView.builder(
@@ -397,7 +236,7 @@ class _PackagesScreenState extends State<PackagesScreen> {
     );
   }
 
-  Widget _buildEmptyState(ThemeData theme) {
+  Widget _buildEmptyState(ThemeData theme, String title, String subtitle) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -419,7 +258,7 @@ class _PackagesScreenState extends State<PackagesScreen> {
             ),
             const SizedBox(height: 20),
             Text(
-              'Sin resultados',
+              title,
               style: theme.textTheme.titleMedium?.copyWith(
                 color: theme.colorScheme.onSurface,
                 fontWeight: FontWeight.bold,
@@ -427,7 +266,7 @@ class _PackagesScreenState extends State<PackagesScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'No se encontraron paquetes con los filtros aplicados.',
+              subtitle,
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
@@ -435,12 +274,10 @@ class _PackagesScreenState extends State<PackagesScreen> {
             ),
             const SizedBox(height: 20),
             OutlinedButton(
-              onPressed: () {
-                setState(() {
-                  _selectedFilter = null;
-                  _searchController.clear();
-                });
-              },
+              onPressed: () => setState(() {
+                _selectedFilter = null;
+                _searchController.clear();
+              }),
               child: const Text('Limpiar filtros'),
             ),
           ],
@@ -449,108 +286,123 @@ class _PackagesScreenState extends State<PackagesScreen> {
     );
   }
 
-  void _onPackageTap(PackageItem package) {
-    debugPrint('Tapped: ${package.trackingNumber}');
+  Widget _buildErrorState(ThemeData theme, String error) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline,
+                size: 48, color: theme.colorScheme.error),
+            const SizedBox(height: 16),
+            Text(
+              'Error al cargar paquetes',
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: theme.colorScheme.onSurface,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              error,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () => ref.invalidate(packagesProvider),
+              child: const Text('Reintentar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _onPackageTap(Package package) {
+    context.push('/packages/${package.id}');
   }
 }
 
-// ==================== PACKAGE CARD ====================
-
 class _PackageCard extends StatelessWidget {
-  final PackageItem package;
+  final Package package;
   final VoidCallback onTap;
 
   const _PackageCard({required this.package, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final scheme = Theme.of(context).colorScheme;
     final statusColor = package.status.color(context);
     final priorityColor = package.priority.color;
     final isUrgent = package.priority == PackagePriority.urgent;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: Material(
-        color: theme.cardColor,
-        borderRadius: BorderRadius.circular(16),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: isUrgent
-                    ? Colors.red.withOpacity(0.4)
-                    : theme.dividerColor.withOpacity(0.15),
-                width: isUrgent ? 1.5 : 1,
-              ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: isUrgent
+                  ? Colors.red.withOpacity(0.4)
+                  : scheme.outlineVariant.withOpacity(0.5),
+              width: isUrgent ? 1.5 : 1,
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Icono de estado a la izquierda
-                  _buildStatusIcon(theme, statusColor),
-                  const SizedBox(width: 14),
-
-                  // Contenido principal
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Fila superior: tracking + status chip
-                        _buildTopRow(theme, statusColor),
-                        const SizedBox(height: 6),
-
-                        // Nombre del destinatario
-                        Text(
-                          package.recipientName,
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-
-                        // Dirección
-                        Text(
-                          package.address,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 10),
-
-                        // Fila inferior: peso + prioridad
-                        _buildBottomRow(theme, priorityColor),
-                      ],
-                    ),
-                  ),
-
-                  // Flecha de navegación
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Icon(
-                      Icons.chevron_right,
-                      color: theme.colorScheme.onSurfaceVariant.withOpacity(
-                        0.4,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildStatusIcon(scheme, statusColor),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildTopRow(scheme, statusColor),
+                    const SizedBox(height: 6),
+                    Text(
+                      package.recipientName ?? 'Sin nombre',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 2),
+                    Text(
+                      package.address ?? 'Sin dirección registrada',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 10),
+                    _buildBottomRow(scheme, priorityColor),
+                  ],
+                ),
               ),
-            ),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Icon(
+                  Icons.chevron_right,
+                  color: scheme.onSurfaceVariant.withOpacity(0.4),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildStatusIcon(ThemeData theme, Color statusColor) {
+  Widget _buildStatusIcon(ColorScheme scheme, Color statusColor) {
     return Container(
       width: 44,
       height: 44,
@@ -562,7 +414,7 @@ class _PackageCard extends StatelessWidget {
     );
   }
 
-  Widget _buildTopRow(ThemeData theme, Color statusColor) {
+  Widget _buildTopRow(ColorScheme scheme, Color statusColor) {
     return Row(
       children: [
         Text(
@@ -570,7 +422,7 @@ class _PackageCard extends StatelessWidget {
           style: TextStyle(
             fontSize: 12,
             fontWeight: FontWeight.w700,
-            color: theme.colorScheme.onSurfaceVariant,
+            color: scheme.onSurfaceVariant,
             letterSpacing: 0.3,
           ),
         ),
@@ -594,14 +446,11 @@ class _PackageCard extends StatelessWidget {
     );
   }
 
-  Widget _buildBottomRow(ThemeData theme, Color priorityColor) {
+  Widget _buildBottomRow(ColorScheme scheme, Color priorityColor) {
     return Row(
       children: [
-        // Peso
-        _InfoChip(icon: Icons.scale, label: package.weight, theme: theme),
+        _InfoChip(icon: Icons.scale, label: package.weight),
         const SizedBox(width: 8),
-
-        // Prioridad
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           decoration: BoxDecoration(
@@ -629,37 +478,35 @@ class _PackageCard extends StatelessWidget {
   }
 }
 
-// ==================== CHIPS AUXILIARES ====================
-
 class _InfoChip extends StatelessWidget {
   final IconData icon;
   final String label;
-  final ThemeData theme;
 
   const _InfoChip({
     required this.icon,
     required this.label,
-    required this.theme,
   });
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
+        color: scheme.surfaceContainerHighest.withOpacity(0.5),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 12, color: theme.colorScheme.onSurfaceVariant),
+          Icon(icon, size: 12, color: scheme.onSurfaceVariant),
           const SizedBox(width: 4),
           Text(
             label,
             style: TextStyle(
               fontSize: 11,
-              color: theme.colorScheme.onSurfaceVariant,
+              color: scheme.onSurfaceVariant,
               fontWeight: FontWeight.w500,
             ),
           ),
