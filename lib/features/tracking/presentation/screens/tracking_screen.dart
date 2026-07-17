@@ -49,7 +49,7 @@ class _T {
   static const double fHeadline = 22;
 
   static const Color primary = Color(0xFF0F172A);
-  static const Color accent = Color(0xFF2563EB);
+  static const Color accent = Color(0xFF206B5C);
   static const Color success = Color(0xFF059669);
   static const Color danger = Color(0xFFDC2626);
   static const Color warning = Color(0xFFD97706);
@@ -863,32 +863,55 @@ class _NextStopHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (currentStop == null) {
+      final tripActive = trip.status == 'en_curso'
+          || trip.status == 'programado'
+          || trip.status == 'pausado';
+      final total = trip.totalStops ?? 0;
+      final done = trip.stopsProgress ?? 0;
+      final trulyDone = total > 0 && done >= total;
+      // Viaje activo sin parada pendiente suele ser checkpoint desfasado
+      // (p.ej. reabrir viaje sin resetear). No mostrar "todo completo" a ciegas.
+      final title = trulyDone
+          ? '¡Todas las paradas completas!'
+          : tripActive
+              ? 'Sin parada pendiente'
+              : 'Sin paradas en el itinerario';
+      final subtitle = trulyDone
+          ? 'Dirígete al destino final o cierra el viaje'
+          : tripActive
+              ? 'El viaje está activo pero no hay checkpoint pendiente. Actualiza o revisá el itinerario en web.'
+              : 'Asigna paradas al viaje desde Routio web';
+      final color = trulyDone ? _T.success : _T.warning;
+      final icon = trulyDone
+          ? Icons.check_circle_rounded
+          : Icons.info_outline_rounded;
+
       return Container(
         padding: const EdgeInsets.all(_T.lg),
         decoration: BoxDecoration(
-          color: _T.alpha(_T.success, 0.08),
+          color: _T.alpha(color, 0.08),
           borderRadius: BorderRadius.circular(_T.rMd),
-          border: Border.all(color: _T.alpha(_T.success, 0.15)),
+          border: Border.all(color: _T.alpha(color, 0.15)),
         ),
-        child: const Row(
+        child: Row(
           children: [
-            Icon(Icons.check_circle_rounded, color: _T.success, size: 24),
-            SizedBox(width: _T.sm),
+            Icon(icon, color: color, size: 24),
+            const SizedBox(width: _T.sm),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '¡Todas las paradas completas!',
+                    title,
                     style: TextStyle(
                       fontSize: _T.fBodyLg,
                       fontWeight: FontWeight.bold,
-                      color: _T.success,
+                      color: color,
                     ),
                   ),
                   Text(
-                    'Dirígete al destino final',
-                    style: TextStyle(fontSize: _T.fBody, color: _T.success),
+                    subtitle,
+                    style: TextStyle(fontSize: _T.fBody, color: color),
                   ),
                 ],
               ),

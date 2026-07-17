@@ -106,9 +106,10 @@ class CurrentTripService {
               km_estimados, distancia_real_km,
               ruta:operations_rutas (origen, destino, nombre),
               vehiculos:operations_viajes_vehiculos (
-                v:fleet_vehiculos (matricula, marca, modelo)
+                vehiculo_id,
+                v:fleet_vehiculos (id, matricula, marca, modelo)
               ),
-              checkpoints:operations_checkpoints ( estado ),
+              checkpoints:operations_checkpoints ( id, estado, parada_id ),
               paquetes:operations_viajes_paquetes ( id, estado )
             )
           ''')
@@ -149,10 +150,13 @@ class CurrentTripService {
       final progress =
           totalStops > 0 ? (doneStops / totalStops).clamp(0.0, 1.0).toDouble() : 0.0;
 
-      String? plate, brand, model;
+      String? plate, brand, model, vehiculoId;
       if (vehs.isNotEmpty) {
-        final vh = vehs.first['v'] as Map<String, dynamic>?;
+        final row = vehs.first as Map<String, dynamic>;
+        vehiculoId = row['vehiculo_id'] as String?;
+        final vh = row['v'] as Map<String, dynamic>?;
         if (vh != null) {
+          vehiculoId ??= vh['id'] as String?;
           plate = vh['matricula'] as String?;
           brand = vh['marca'] as String?;
           model = vh['modelo'] as String?;
@@ -179,9 +183,7 @@ class CurrentTripService {
         vehicleModel: model,
         conductorId: ctx.conductorId,
         empresaId: ctx.empresaId,
-        vehiculoId: vehs.isNotEmpty
-            ? (vehs.first['vehiculo_id'] as String?)
-            : null,
+        vehiculoId: vehiculoId,
       );
     } catch (e) {
       debugPrint('CurrentTripService.fetchActiveTrip error: $e');
@@ -189,12 +191,20 @@ class CurrentTripService {
     }
   }
 
-  /// Obtiene todos los viajes del conductor (para la pantalla Mis Viajes).
-  Future<List<ActiveTripData>> fetchAllTrips() async {
+  /// Lista de viajes del conductor (paginada — memoria acotada).
+  Future<List<ActiveTripData>> fetchAllTrips({
+    int page = 0,
+    int pageSize = 15,
+  }) async {
     final ctx = await _getDriverContext();
     if (ctx == null) return [];
 
+    final size = pageSize.clamp(1, 50);
+    final from = page * size;
+    final to = from + size - 1;
+
     try {
+      // Select liviano: sin arrays anidados enormes de checkpoints/paquetes
       final data = await _client
           .from('operations_viajes_conductores')
           .select('''
@@ -203,44 +213,71 @@ class CurrentTripService {
               km_estimados, distancia_real_km,
               ruta:operations_rutas (origen, destino, nombre),
               vehiculos:operations_viajes_vehiculos (
-                v:fleet_vehiculos (matricula, marca, modelo)
-              ),
-              checkpoints:operations_checkpoints ( estado ),
-              paquetes:operations_viajes_paquetes ( id, estado )
+                vehiculo_id,
+                v:fleet_vehiculos (id, matricula, marca, modelo)
+              )
             )
           ''')
           .eq('conductor_id', ctx.conductorId)
           .filter('deleted_at', 'is', null)
-          .order('created_at', ascending: false);
+          .order('created_at', ascending: false)
+          .range(from, to);
 
-      return (data as List).map((item) {
-        final v = item['viaje'] as Map<String, dynamic>;
-        final checkpoints = v['checkpoints'] as List? ?? [];
-        final paquetes = v['paquetes'] as List? ?? [];
-        final vehs = v['vehiculos'] as List? ?? [];
-        final ruta = v['ruta'] as Map<String, dynamic>?;
+      final trips = <ActiveTripData>[];
+      for (final item in data as List) {
+        final v = item['viaje'] as Map<String, dynamic>?;
+        if (v == null) continue;
 
-        final totalStops = checkpoints.length;
-        final doneStops =
-            checkpoints.where((c) => c['estado'] == 'completado').length;
-        final pendingPkgs =
-            paquetes.where((p) => p['estado'] != 'entregado').length;
+        // Conteos acotados (máx. 50 filas) para no inflar memoria
+        final tripId = v['id'] as String;
+        int totalStops = 0;
+        int doneStops = 0;
+        int pendingPkgs = 0;
+        try {
+          final cps = await _client
+              .from('operations_checkpoints')
+              .select('estado')
+              .eq('viaje_id', tripId)
+              .filter('deleted_at', 'is', null)
+              .limit(50);
+          final list = cps as List;
+          totalStops = list.length;
+          doneStops =
+              list.where((c) => c['estado'] == 'completado').length;
+        } catch (_) {}
+        try {
+          final pkgs = await _client
+              .from('operations_viajes_paquetes')
+              .select('estado')
+              .eq('viaje_id', tripId)
+              .filter('deleted_at', 'is', null)
+              .limit(50);
+          final list = pkgs as List;
+          pendingPkgs =
+              list.where((p) => p['estado'] != 'entregado').length;
+        } catch (_) {}
+
         final progress = totalStops > 0
             ? (doneStops / totalStops).clamp(0.0, 1.0).toDouble()
             : 0.0;
 
-        String? plate, brand, model;
+        final vehs = v['vehiculos'] as List? ?? [];
+        final ruta = v['ruta'] as Map<String, dynamic>?;
+        String? plate, brand, model, vehiculoId;
         if (vehs.isNotEmpty) {
-          final vh = vehs.first['v'] as Map<String, dynamic>?;
+          final row = vehs.first as Map<String, dynamic>;
+          vehiculoId = row['vehiculo_id'] as String?;
+          final vh = row['v'] as Map<String, dynamic>?;
           if (vh != null) {
+            vehiculoId ??= vh['id'] as String?;
             plate = vh['matricula'] as String?;
             brand = vh['marca'] as String?;
             model = vh['modelo'] as String?;
           }
         }
 
-        return ActiveTripData(
-          id: v['id'] as String,
+        trips.add(ActiveTripData(
+          id: tripId,
           code: (v['codigo'] as String?) ?? '--',
           status: (v['estado'] as String?) ?? 'programado',
           departureTime: v['hora_real_salida'] as String?,
@@ -259,11 +296,10 @@ class CurrentTripService {
           vehicleModel: model,
           conductorId: ctx.conductorId,
           empresaId: ctx.empresaId,
-          vehiculoId: vehs.isNotEmpty
-              ? (vehs.first['vehiculo_id'] as String?)
-              : null,
-        );
-      }).toList();
+          vehiculoId: vehiculoId,
+        ));
+      }
+      return trips;
     } catch (e) {
       debugPrint('CurrentTripService.fetchAllTrips error: $e');
       return [];

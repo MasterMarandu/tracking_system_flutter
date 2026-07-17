@@ -11,21 +11,22 @@ import 'package:tracking_system_app/core/config/supabase_config.dart';
 // DESIGN SYSTEM
 // ═════════════════════════════════════════════════════════════
 
+/// Colores de login alineados con Routio web.
 abstract final class AppColors {
-  static const primary = Color(0xFF2563EB);
-  static const primaryDark = Color(0xFF1D4ED8);
+  static const primary = Color(0xFF206B5C);
+  static const primaryDark = Color(0xFF174F44);
 
-  static const background = Color(0xFFF6F8FC);
+  static const background = Color(0xFFF4F6F5);
   static const surface = Color(0xFFFFFFFF);
   static const inputFill = Color(0xFFF8FAFC);
 
-  static const textPrimary = Color(0xFF111827);
-  static const textSecondary = Color(0xFF667085);
-  static const textMuted = Color(0xFF98A2B3);
-  static const border = Color(0xFFE4E7EC);
+  static const textPrimary = Color(0xFF172521);
+  static const textSecondary = Color(0xFF6E7B77);
+  static const textMuted = Color(0xFF96A09D);
+  static const border = Color(0xFFE2E8E5);
 
-  static const error = Color(0xFFD92D20);
-  static const success = Color(0xFF12B76A);
+  static const error = Color(0xFFC74C4C);
+  static const success = Color(0xFF16A34A);
 }
 
 abstract final class AppDimensions {
@@ -43,9 +44,9 @@ abstract final class AppDimensions {
 
 abstract final class AppTextStyles {
   static const brand = TextStyle(
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: FontWeight.w800,
-    letterSpacing: 3.2,
+    letterSpacing: 2.4,
     color: AppColors.primary,
   );
 
@@ -437,20 +438,20 @@ class _LoginScreenState extends State<LoginScreen>
       children: [
         Semantics(
           image: true,
-          label: 'Logo de FleetTrack',
+          label: 'Logo de Routio',
           child: Container(
             width: logoSize,
             height: logoSize,
             decoration: BoxDecoration(
               gradient: const LinearGradient(
-                colors: [AppColors.primary, AppColors.primaryDark],
+                colors: [Color(0xFF206B5C), Color(0xFF2D8A78)],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
               boxShadow: [
                 BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.24),
+                  color: AppColors.primary.withValues(alpha: 0.28),
                   blurRadius: 24,
                   offset: const Offset(0, 12),
                   spreadRadius: -5,
@@ -458,7 +459,7 @@ class _LoginScreenState extends State<LoginScreen>
               ],
             ),
             child: Icon(
-              Icons.local_shipping_rounded,
+              Icons.navigation_rounded,
               size: compact ? 32 : 38,
               color: Colors.white,
             ),
@@ -467,7 +468,7 @@ class _LoginScreenState extends State<LoginScreen>
 
         SizedBox(height: compact ? 18 : 24),
 
-        const Text('FLEETTRACK', style: AppTextStyles.brand),
+        const Text('ROUTIO', style: AppTextStyles.brand),
 
         const SizedBox(height: 12),
 
@@ -482,7 +483,7 @@ class _LoginScreenState extends State<LoginScreen>
         const SizedBox(
           width: 310,
           child: Text(
-            'Ingresa tus credenciales para acceder a tu panel de gestión',
+            'Ingresa tus credenciales para acceder a la app del conductor',
             textAlign: TextAlign.center,
             style: AppTextStyles.subtitle,
           ),
@@ -719,7 +720,7 @@ class _LoginScreenState extends State<LoginScreen>
         const SizedBox(height: 14),
 
         Text(
-          '© $_currentYear FleetTrack · v1.0.0',
+          '© $_currentYear Routio · App del conductor',
           textAlign: TextAlign.center,
           style: AppTextStyles.caption,
         ),

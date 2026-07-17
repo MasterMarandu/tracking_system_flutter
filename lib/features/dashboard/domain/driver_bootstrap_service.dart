@@ -128,7 +128,9 @@ class DriverBootstrapService {
         routeName: activeTrip.routeName,
       );
 
-      // Cargar currentStop (primer checkpoint incompleto)
+      // Cargar currentStop (primer checkpoint incompleto).
+      // Si el checkpoint quedó "completado" pero la visita sigue pendiente
+      // (viaje reabierto), usamos la visita como fuente de verdad.
       try {
         final checkpoints = await SupabaseConfig.client
             .from('operations_checkpoints')
@@ -136,11 +138,76 @@ class DriverBootstrapService {
             .eq('viaje_id', activeTrip.id)
             .filter('deleted_at', 'is', null);
 
-        final pendingCheckpoints = checkpoints
-            .where((c) => c['estado'] == 'pendiente' || c['estado'] == 'llego')
+        var pendingCheckpoints = (checkpoints as List)
+            .where((c) =>
+                c['estado'] == 'pendiente' ||
+                c['estado'] == 'llego' ||
+                c['estado'] == 'en_proceso')
             .toList();
 
-        if (pendingCheckpoints.isNotEmpty) {
+        // Fallback: visitas del itinerario aún pendientes
+        if (pendingCheckpoints.isEmpty) {
+          final visits = await SupabaseConfig.client
+              .from('operations_viaje_visitas')
+              .select('id, estado, parada_id, nombre, direccion, latitud, longitud, orden, duracion_estimada_min')
+              .eq('viaje_id', activeTrip.id)
+              .filter('deleted_at', 'is', null)
+              .order('orden');
+
+          final pendingVisits = (visits as List).where((v) {
+            final e = v['estado'] as String? ?? 'pendiente';
+            return e == 'pendiente' || e == 'en_proceso' || e == 'llego';
+          }).toList();
+
+          if (pendingVisits.isNotEmpty) {
+            final visit = pendingVisits.first as Map<String, dynamic>;
+            final paradaId = visit['parada_id'] as String?;
+
+            // Buscar checkpoint asociado (aunque esté mal en completado)
+            Map<String, dynamic>? linkedCp;
+            for (final c in checkpoints as List) {
+              if (c['parada_id'] == paradaId) {
+                linkedCp = Map<String, dynamic>.from(c as Map);
+                break;
+              }
+            }
+
+            String stopName = visit['nombre'] as String? ?? 'Sin nombre';
+            String stopAddress = visit['direccion'] as String? ?? '';
+            double? lat = (visit['latitud'] as num?)?.toDouble();
+            double? lng = (visit['longitud'] as num?)?.toDouble();
+            int? etaMinutes = visit['duracion_estimada_min'] as int?;
+
+            if (paradaId != null) {
+              final paradas = await SupabaseConfig.client
+                  .from('operations_paradas')
+                  .select(
+                      'nombre, direccion, latitud, longitud, eta_minutos, orden')
+                  .eq('id', paradaId)
+                  .filter('deleted_at', 'is', null)
+                  .limit(1);
+              if (paradas.isNotEmpty) {
+                final p = paradas.first;
+                stopName = p['nombre'] as String? ?? stopName;
+                stopAddress = p['direccion'] as String? ?? stopAddress;
+                lat = (p['latitud'] as num?)?.toDouble() ?? lat;
+                lng = (p['longitud'] as num?)?.toDouble() ?? lng;
+                etaMinutes = p['eta_minutos'] as int? ?? etaMinutes;
+              }
+            }
+
+            currentStop = BootstrapCurrentStop(
+              id: paradaId ?? visit['id'] as String,
+              checkpointId: linkedCp?['id'] as String?,
+              name: stopName,
+              address: stopAddress,
+              lat: lat,
+              lng: lng,
+              etaMinutes: etaMinutes,
+              status: 'pendiente',
+            );
+          }
+        } else {
           final cp = pendingCheckpoints.first;
           final paradaId = cp['parada_id'] as String?;
 

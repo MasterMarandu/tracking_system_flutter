@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:tracking_system_app/core/pagination/paged_scroll_mixin.dart';
 import 'package:tracking_system_app/features/packages/domain/package.dart';
 import 'package:tracking_system_app/features/packages/domain/packages_provider.dart';
 
@@ -11,40 +14,51 @@ class PackagesScreen extends ConsumerStatefulWidget {
   ConsumerState<PackagesScreen> createState() => _PackagesScreenState();
 }
 
-class _PackagesScreenState extends ConsumerState<PackagesScreen> {
+class _PackagesScreenState extends ConsumerState<PackagesScreen>
+    with PagedScrollMixin {
   final _searchController = TextEditingController();
-  PackageStatus? _selectedFilter;
   bool _isSearching = false;
+  Timer? _searchDebounce;
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
-  List<Package> _filteredPackages(List<Package> all) {
-    var filtered = all;
+  @override
+  void onLoadMoreRequested() {
+    ref.read(packagesPagedProvider.notifier).loadMore();
+  }
 
-    if (_selectedFilter != null) {
-      filtered = filtered.where((p) => p.status == _selectedFilter).toList();
-    }
+  Future<void> _refresh() async {
+    await ref.read(packagesPagedProvider.notifier).refresh(
+          search: _searchController.text.trim(),
+        );
+  }
 
-    if (_searchController.text.isNotEmpty) {
-      final query = _searchController.text.toLowerCase();
-      filtered = filtered.where((p) {
-        return p.trackingNumber.toLowerCase().contains(query) ||
-            (p.recipientName?.toLowerCase().contains(query) ?? false) ||
-            (p.address?.toLowerCase().contains(query) ?? false);
-      }).toList();
-    }
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
+      final n = ref.read(packagesPagedProvider.notifier);
+      n.setSearch(value.trim());
+      n.refresh(search: value.trim());
+    });
+  }
 
-    return filtered;
+  void _onFilterSelected(PackageStatus? filter) {
+    final n = ref.read(packagesPagedProvider.notifier);
+    n.setStatusFilter(filter);
+    n.refresh(search: _searchController.text.trim());
+    setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final packagesAsync = ref.watch(packagesProvider);
+    final state = ref.watch(packagesPagedProvider);
+    final notifier = ref.read(packagesPagedProvider.notifier);
 
     return Scaffold(
       appBar: AppBar(
@@ -55,40 +69,84 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
             icon: Icon(_isSearching ? Icons.close : Icons.search),
             onPressed: () => setState(() {
               _isSearching = !_isSearching;
-              if (!_isSearching) _searchController.clear();
+              if (!_isSearching) {
+                _searchController.clear();
+                notifier.setSearch('');
+                notifier.refresh(search: '');
+              }
             }),
-          ),
-          IconButton(
-            tooltip: 'Más opciones',
-            icon: const Icon(Icons.more_vert),
-            onPressed: () {},
           ),
         ],
       ),
-      body: packagesAsync.when(
-        data: (packages) {
-          if (packages.isEmpty) {
-            return _buildEmptyState(theme, 'Sin paquetes',
-                'No hay paquetes asignados a tu viaje actual.');
-          }
-          return _buildBody(theme, packages);
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => _buildErrorState(theme, e.toString()),
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: state.isInitialLoading
+            ? ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: const [
+                  SizedBox(height: 180),
+                  Center(child: CircularProgressIndicator()),
+                ],
+              )
+            : state.error != null && state.items.isEmpty
+                ? ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      SizedBox(
+                        height: MediaQuery.of(context).size.height * 0.5,
+                        child: _buildErrorState(theme, state.error!),
+                      ),
+                    ],
+                  )
+                : state.items.isEmpty
+                    ? ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        children: [
+                          SizedBox(
+                            height: MediaQuery.of(context).size.height * 0.55,
+                            child: _buildEmptyState(
+                              theme,
+                              'Sin paquetes',
+                              'No hay paquetes en el inventario. '
+                              'Créalos en Routio web o baja para reintentar.',
+                            ),
+                          ),
+                        ],
+                      )
+                    : Column(
+                        children: [
+                          _buildSearchBar(theme),
+                          _buildFilters(theme, state.items, notifier.statusFilter),
+                          _buildResultsCount(
+                            theme,
+                            state.items.length,
+                            hasMore: state.hasMore,
+                            total: state.total,
+                          ),
+                          Expanded(
+                            child: ListView.builder(
+                              controller: pagedScrollController,
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              padding: const EdgeInsets.symmetric(horizontal: 16),
+                              itemCount: state.items.length + 1,
+                              itemBuilder: (context, index) {
+                                if (index >= state.items.length) {
+                                  return buildLoadMoreFooter(
+                                    isLoadingMore: state.isLoadingMore,
+                                    hasMore: state.hasMore,
+                                  );
+                                }
+                                final package = state.items[index];
+                                return _PackageCard(
+                                  package: package,
+                                  onTap: () => _onPackageTap(package),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
       ),
-    );
-  }
-
-  Widget _buildBody(ThemeData theme, List<Package> packages) {
-    final filtered = _filteredPackages(packages);
-
-    return Column(
-      children: [
-        _buildSearchBar(theme),
-        _buildFilters(theme, packages),
-        _buildResultsCount(theme, filtered.length),
-        Expanded(child: _buildPackageList(filtered)),
-      ],
     );
   }
 
@@ -106,33 +164,38 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
             controller: _searchController,
             autofocus: _isSearching,
             decoration: InputDecoration(
-              hintText: 'Buscar por tracking, nombre o dirección...',
+              hintText: 'Buscar por tracking…',
               prefixIcon: const Icon(Icons.search),
               suffixIcon: _searchController.text.isNotEmpty
                   ? IconButton(
                       icon: const Icon(Icons.clear),
-                      onPressed: () =>
-                          setState(() => _searchController.clear()),
+                      onPressed: () {
+                        _searchController.clear();
+                        _onSearchChanged('');
+                      },
                     )
                   : null,
               filled: true,
-              fillColor: theme.colorScheme.surfaceContainerHighest.withOpacity(
-                0.5,
-              ),
+              fillColor: theme.colorScheme.surfaceContainerHighest
+                  .withValues(alpha: 0.5),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide.none,
               ),
               contentPadding: const EdgeInsets.symmetric(vertical: 0),
             ),
-            onChanged: (_) => setState(() {}),
+            onChanged: _onSearchChanged,
           ),
         ),
       ),
     );
   }
 
-  Widget _buildFilters(ThemeData theme, List<Package> packages) {
+  Widget _buildFilters(
+    ThemeData theme,
+    List<Package> packages,
+    PackageStatus? selected,
+  ) {
     final filters = <PackageStatus?>[null, ...PackageStatus.values];
 
     return SizedBox(
@@ -144,7 +207,7 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
           final filter = filters[index];
-          final isSelected = _selectedFilter == filter;
+          final isSelected = selected == filter;
           final count = filter != null
               ? packages.where((p) => p.status == filter).length
               : packages.length;
@@ -156,32 +219,20 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
               children: [
                 Text(label),
                 const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 1,
-                  ),
-                  decoration: BoxDecoration(
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
                     color: isSelected
-                        ? theme.colorScheme.onPrimaryContainer.withOpacity(0.15)
-                        : theme.colorScheme.onSurface.withOpacity(0.08),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(
-                    '$count',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: isSelected
-                          ? theme.colorScheme.onPrimaryContainer
-                          : theme.colorScheme.onSurfaceVariant,
-                    ),
+                        ? theme.colorScheme.onPrimaryContainer
+                        : theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],
             ),
             selected: isSelected,
-            onSelected: (_) => setState(() => _selectedFilter = filter),
+            onSelected: (_) => _onFilterSelected(filter),
             selectedColor: theme.colorScheme.primaryContainer,
             showCheckmark: false,
             shape: RoundedRectangleBorder(
@@ -193,46 +244,27 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
     );
   }
 
-  Widget _buildResultsCount(ThemeData theme, int count) {
+  Widget _buildResultsCount(
+    ThemeData theme,
+    int count, {
+    required bool hasMore,
+    int? total,
+  }) {
+    final label = total != null
+        ? 'Mostrando $count de $total'
+        : hasMore
+            ? '$count cargados · desliza para más'
+            : '$count paquete${count != 1 ? 's' : ''}';
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-      child: Row(
-        children: [
-          Text(
-            '$count paquete${count != 1 ? 's' : ''} encontrado${count != 1 ? 's' : ''}',
-            style: TextStyle(
-              fontSize: 13,
-              color: theme.colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const Spacer(),
-          TextButton.icon(
-            onPressed: () {},
-            icon: const Icon(Icons.qr_code_scanner, size: 18),
-            label: const Text('Escanear'),
-            style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-          ),
-        ],
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 13,
+          color: theme.colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.w500,
+        ),
       ),
-    );
-  }
-
-  Widget _buildPackageList(List<Package> packages) {
-    if (packages.isEmpty) {
-      return _buildEmptyState(Theme.of(context), 'Sin resultados',
-          'No se encontraron paquetes con los filtros aplicados.');
-    }
-
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: packages.length,
-      itemBuilder: (context, index) {
-        return _PackageCard(
-          package: packages[index],
-          onTap: () => _onPackageTap(packages[index]),
-        );
-      },
     );
   }
 
@@ -243,24 +275,15 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.inventory_2_outlined,
-                size: 40,
-                color: theme.colorScheme.onSurfaceVariant.withOpacity(0.5),
-              ),
+            Icon(
+              Icons.inventory_2_outlined,
+              size: 48,
+              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             Text(
               title,
               style: theme.textTheme.titleMedium?.copyWith(
-                color: theme.colorScheme.onSurface,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -271,14 +294,6 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
-            ),
-            const SizedBox(height: 20),
-            OutlinedButton(
-              onPressed: () => setState(() {
-                _selectedFilter = null;
-                _searchController.clear();
-              }),
-              child: const Text('Limpiar filtros'),
             ),
           ],
         ),
@@ -293,13 +308,11 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error_outline,
-                size: 48, color: theme.colorScheme.error),
+            Icon(Icons.error_outline, size: 48, color: theme.colorScheme.error),
             const SizedBox(height: 16),
             Text(
               'Error al cargar paquetes',
               style: theme.textTheme.titleMedium?.copyWith(
-                color: theme.colorScheme.onSurface,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -307,13 +320,11 @@ class _PackagesScreenState extends ConsumerState<PackagesScreen> {
             Text(
               error,
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+              style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: () => ref.invalidate(packagesProvider),
+              onPressed: _refresh,
               child: const Text('Reintentar'),
             ),
           ],
@@ -335,182 +346,74 @@ class _PackageCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final statusColor = package.status.color(context);
-    final priorityColor = package.priority.color;
-    final isUrgent = package.priority == PackagePriority.urgent;
+    final theme = Theme.of(context);
+    final status = package.status;
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.6)),
+      ),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(20),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: isUrgent
-                  ? Colors.red.withOpacity(0.4)
-                  : scheme.outlineVariant.withOpacity(0.5),
-              width: isUrgent ? 1.5 : 1,
-            ),
-          ),
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildStatusIcon(scheme, statusColor),
-              const SizedBox(width: 14),
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: status.color(context).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(status.icon, color: status.color(context)),
+              ),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildTopRow(scheme, statusColor),
-                    const SizedBox(height: 6),
                     Text(
-                      package.recipientName ?? 'Sin nombre',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
+                      package.trackingNumber,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
                       ),
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 4),
                     Text(
-                      package.address ?? 'Sin dirección registrada',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
+                      package.recipientName ?? package.weight,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 10),
-                    _buildBottomRow(scheme, priorityColor),
                   ],
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Icon(
-                  Icons.chevron_right,
-                  color: scheme.onSurfaceVariant.withOpacity(0.4),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: status.color(context).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  status.label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: status.color(context),
+                  ),
                 ),
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildStatusIcon(ColorScheme scheme, Color statusColor) {
-    return Container(
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        color: statusColor.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Icon(package.status.icon, color: statusColor, size: 22),
-    );
-  }
-
-  Widget _buildTopRow(ColorScheme scheme, Color statusColor) {
-    return Row(
-      children: [
-        Text(
-          package.trackingNumber,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            color: scheme.onSurfaceVariant,
-            letterSpacing: 0.3,
-          ),
-        ),
-        const Spacer(),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: statusColor.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            package.status.label,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: statusColor,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBottomRow(ColorScheme scheme, Color priorityColor) {
-    return Row(
-      children: [
-        _InfoChip(icon: Icons.scale, label: package.weight),
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: priorityColor.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(package.priority.icon, size: 12, color: priorityColor),
-              const SizedBox(width: 4),
-              Text(
-                package.priority.label,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: priorityColor,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _InfoChip extends StatelessWidget {
-  final IconData icon;
-  final String label;
-
-  const _InfoChip({
-    required this.icon,
-    required this.label,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withOpacity(0.5),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 12, color: scheme.onSurfaceVariant),
-          const SizedBox(width: 4),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              color: scheme.onSurfaceVariant,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
       ),
     );
   }

@@ -1,6 +1,7 @@
 abstract class AppConstants {
-  // App Info
-  static const String appName = 'Tracking System';
+  // App Info (aligned with Routio web)
+  static const String appName = 'Routio';
+  static const String appTagline = 'App del conductor';
   static const String appVersion = '1.0.0';
   static const String appBuildNumber = '1';
   
@@ -16,9 +17,14 @@ abstract class AppConstants {
   static const double gpsHighSpeedThresholdKmh = 80.0;
   static const int gpsDistanceFilterMeters = 10;
   
-  // Pagination
+  // Pagination (memoria acotada en listas de la app conductor)
   static const int defaultPageSize = 20;
-  static const int maxPageSize = 100;
+  static const int maxPageSize = 50;
+  static const int tripsPageSize = 15;
+  static const int packagesPageSize = 20;
+  static const int notificationsPageSize = 20;
+  /// Tope de puntos GPS en memoria (trail / historial local).
+  static const int maxGpsTrailPoints = 200;
   
   // Cache
   static const int cacheExpirationHours = 24;
@@ -35,9 +41,9 @@ abstract class AppConstants {
   static const double signatureHeight = 200;
   
   // Notification
-  static const String notificationChannelId = 'tracking_system';
-  static const String notificationChannelName = 'Tracking System';
-  static const String notificationChannelDescription = 'GPS Tracking notifications';
+  static const String notificationChannelId = 'routio_tracking';
+  static const String notificationChannelName = 'Routio';
+  static const String notificationChannelDescription = 'Seguimiento GPS y alertas de operación';
   
   // Storage Keys
   static const String keyAccessToken = 'access_token';
@@ -49,6 +55,9 @@ abstract class AppConstants {
   static const String keyLanguage = 'language';
   static const String keyFirstLaunch = 'first_launch';
   static const String keyLastSync = 'last_sync';
+  static const String keyNotificationsEnabled = 'notifications_enabled';
+  static const String keyTripAlertsEnabled = 'trip_alerts_enabled';
+  static const String keyKeepScreenOn = 'keep_screen_on';
   
   // Date Formats
   static const String dateFormat = 'dd/MM/yyyy';

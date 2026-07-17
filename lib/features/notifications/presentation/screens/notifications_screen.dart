@@ -1,158 +1,120 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tracking_system_app/core/pagination/paged_scroll_mixin.dart';
+import 'package:tracking_system_app/features/notifications/domain/app_notification.dart';
+import 'package:tracking_system_app/features/notifications/domain/notifications_provider.dart';
 
-enum NotificationType {
-  delivery('Delivery', Icons.local_shipping_outlined, Colors.green),
-  incident('Incident', Icons.warning_amber, Colors.orange),
-  system('System', Icons.settings_outlined, Colors.blue),
-  promotion('Promotion', Icons.local_offer_outlined, Colors.purple),
-  alert('Alert', Icons.error_outline, Colors.red);
-
-  final String label;
-  final IconData icon;
-  final Color color;
-  const NotificationType(this.label, this.icon, this.color);
-}
-
-class AppNotification {
-  final String id;
-  final NotificationType type;
-  final String title;
-  final String message;
-  final DateTime time;
-  bool isRead;
-
-  AppNotification({
-    required this.id,
-    required this.type,
-    required this.title,
-    required this.message,
-    required this.time,
-    this.isRead = false,
-  });
-}
-
-class NotificationsScreen extends StatefulWidget {
+class NotificationsScreen extends ConsumerStatefulWidget {
   const NotificationsScreen({super.key});
 
   @override
-  State<NotificationsScreen> createState() => _NotificationsScreenState();
+  ConsumerState<NotificationsScreen> createState() =>
+      _NotificationsScreenState();
 }
 
-class _NotificationsScreenState extends State<NotificationsScreen> {
-  final List<AppNotification> _notifications = [
-    AppNotification(
-      id: '1',
-      type: NotificationType.delivery,
-      title: 'Package Delivered',
-      message: 'Your package PKG-12345 has been delivered successfully to the front door.',
-      time: DateTime.now().subtract(const Duration(minutes: 15)),
-      isRead: false,
-    ),
-    AppNotification(
-      id: '2',
-      type: NotificationType.incident,
-      title: 'Delivery Delayed',
-      message: 'Package PKG-67890 is experiencing a delay due to weather conditions.',
-      time: DateTime.now().subtract(const Duration(hours: 1)),
-      isRead: false,
-    ),
-    AppNotification(
-      id: '3',
-      type: NotificationType.alert,
-      title: 'Action Required',
-      message: 'Package PKG-11111 requires a new delivery address. Please update.',
-      time: DateTime.now().subtract(const Duration(hours: 3)),
-      isRead: false,
-    ),
-    AppNotification(
-      id: '4',
-      type: NotificationType.system,
-      title: 'App Update Available',
-      message: 'Version 2.5.0 is now available with improved tracking features.',
-      time: DateTime.now().subtract(const Duration(hours: 6)),
-      isRead: true,
-    ),
-    AppNotification(
-      id: '5',
-      type: NotificationType.delivery,
-      title: 'Out for Delivery',
-      message: 'Package PKG-99999 is out for delivery. Expected by 5:00 PM.',
-      time: DateTime.now().subtract(const Duration(hours: 8)),
-      isRead: true,
-    ),
-    AppNotification(
-      id: '6',
-      type: NotificationType.promotion,
-      title: 'Free Delivery Weekend',
-      message: 'Enjoy free delivery on all orders this weekend! Use code FREEWEEKEND.',
-      time: DateTime.now().subtract(const Duration(days: 1)),
-      isRead: true,
-    ),
-    AppNotification(
-      id: '7',
-      type: NotificationType.incident,
-      title: 'Incident Resolved',
-      message: 'Incident INC-003 regarding wrong address has been resolved.',
-      time: DateTime.now().subtract(const Duration(days: 1, hours: 4)),
-      isRead: true,
-    ),
-    AppNotification(
-      id: '8',
-      type: NotificationType.system,
-      title: 'Profile Incomplete',
-      message: 'Please complete your driver profile to continue accepting deliveries.',
-      time: DateTime.now().subtract(const Duration(days: 2)),
-      isRead: true,
-    ),
-  ];
-
-  int get _unreadCount => _notifications.where((n) => !n.isRead).length;
+class _NotificationsScreenState extends ConsumerState<NotificationsScreen>
+    with PagedScrollMixin {
+  @override
+  void onLoadMoreRequested() {
+    ref.read(notificationsPagedProvider.notifier).loadMore();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final state = ref.watch(notificationsPagedProvider);
+    final unreadCount = state.items.where((n) => !n.isRead).length;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Notifications'),
+        title: const Text('Notificaciones'),
         centerTitle: true,
         actions: [
-          if (_unreadCount > 0)
+          if (unreadCount > 0)
             TextButton(
-              onPressed: _markAllAsRead,
-              child: const Text('Mark all read'),
+              onPressed: () async {
+                await ref
+                    .read(notificationsPagedProvider.notifier)
+                    .markAllRead();
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Todas marcadas como leídas'),
+                  ),
+                );
+              },
+              child: const Text('Leer todas'),
             ),
         ],
       ),
-      body: _notifications.isEmpty
-          ? _buildEmptyState(theme)
-          : Column(
-              children: [
-                if (_unreadCount > 0) _buildUnreadBanner(theme),
-                Expanded(
-                  child: ListView.separated(
-                    itemCount: _notifications.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1, indent: 72),
-                    itemBuilder: (context, index) {
-                      return _buildNotificationTile(
-                        theme,
-                        _notifications[index],
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
+      body: RefreshIndicator(
+        onRefresh: () =>
+            ref.read(notificationsPagedProvider.notifier).refresh(),
+        child: state.isInitialLoading
+            ? ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: const [
+                  SizedBox(height: 160),
+                  Center(child: CircularProgressIndicator()),
+                ],
+              )
+            : state.error != null && state.items.isEmpty
+                ? ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      SizedBox(
+                        height: MediaQuery.of(context).size.height * 0.5,
+                        child: _buildError(theme, state.error!),
+                      ),
+                    ],
+                  )
+                : state.items.isEmpty
+                    ? ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        children: [
+                          SizedBox(
+                            height: MediaQuery.of(context).size.height * 0.55,
+                            child: _buildEmptyState(theme),
+                          ),
+                        ],
+                      )
+                    : Column(
+                        children: [
+                          if (unreadCount > 0) _buildUnreadBanner(theme, unreadCount),
+                          Expanded(
+                            child: ListView.separated(
+                              controller: pagedScrollController,
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              itemCount: state.items.length + 1,
+                              separatorBuilder: (_, __) =>
+                                  const Divider(height: 1, indent: 72),
+                              itemBuilder: (context, index) {
+                                if (index >= state.items.length) {
+                                  return buildLoadMoreFooter(
+                                    isLoadingMore: state.isLoadingMore,
+                                    hasMore: state.hasMore,
+                                  );
+                                }
+                                return _buildNotificationTile(
+                                  theme,
+                                  state.items[index],
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+      ),
     );
   }
 
-  Widget _buildUnreadBanner(ThemeData theme) {
+  Widget _buildUnreadBanner(ThemeData theme, int unreadCount) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       color: theme.colorScheme.primaryContainer,
       child: Text(
-        '$_unreadCount unread notification${_unreadCount > 1 ? 's' : ''}',
+        '$unreadCount sin leer',
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onPrimaryContainer,
           fontWeight: FontWeight.w500,
@@ -167,13 +129,17 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.notifications_none_outlined,
-              size: 64, color: theme.colorScheme.onSurfaceVariant),
+          Icon(
+            Icons.notifications_none_outlined,
+            size: 64,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
           const SizedBox(height: 16),
-          Text('No notifications', style: theme.textTheme.titleMedium),
+          Text('Sin notificaciones', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           Text(
-            'You\'re all caught up!',
+            'Los eventos de tus viajes y entregas aparecerán aquí.',
+            textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -183,11 +149,38 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     );
   }
 
+  Widget _buildError(ThemeData theme, String error) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, color: theme.colorScheme.error, size: 48),
+            const SizedBox(height: 12),
+            const Text('No se pudieron cargar las notificaciones'),
+            const SizedBox(height: 8),
+            Text(error, textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () =>
+                  ref.read(notificationsPagedProvider.notifier).refresh(),
+              child: const Text('Reintentar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildNotificationTile(ThemeData theme, AppNotification notification) {
     return InkWell(
-      onTap: () {
-        setState(() => notification.isRead = true);
-        _showNotificationDetail(theme, notification);
+      onTap: () async {
+        await ref
+            .read(notificationsPagedProvider.notifier)
+            .markRead(notification);
+        if (!mounted) return;
+        _showNotificationDetail(theme, notification.copyWith(isRead: true));
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -250,8 +243,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   const SizedBox(height: 6),
                   Row(
                     children: [
-                      Icon(Icons.schedule,
-                          size: 14, color: theme.colorScheme.onSurfaceVariant),
+                      Icon(
+                        Icons.schedule,
+                        size: 14,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                       const SizedBox(width: 4),
                       Text(
                         _formatTime(notification.time),
@@ -292,22 +288,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final now = DateTime.now();
     final diff = now.difference(time);
 
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    return '${time.month}/${time.day}/${time.year}';
-  }
-
-  void _markAllAsRead() {
-    setState(() {
-      for (final n in _notifications) {
-        n.isRead = true;
-      }
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('All notifications marked as read')),
-    );
+    if (diff.inMinutes < 1) return 'Ahora';
+    if (diff.inMinutes < 60) return 'Hace ${diff.inMinutes} min';
+    if (diff.inHours < 24) return 'Hace ${diff.inHours} h';
+    if (diff.inDays < 7) return 'Hace ${diff.inDays} d';
+    return '${time.day}/${time.month}/${time.year}';
   }
 
   void _showNotificationDetail(ThemeData theme, AppNotification notification) {
@@ -371,14 +356,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 ],
               ),
               const SizedBox(height: 20),
-              Text(
-                notification.message,
-                style: theme.textTheme.bodyLarge,
-              ),
+              Text(notification.message, style: theme.textTheme.bodyLarge),
               const SizedBox(height: 24),
               FilledButton(
                 onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Dismiss'),
+                child: const Text('Cerrar'),
               ),
               const SizedBox(height: 8),
             ],

@@ -1,5 +1,8 @@
 import 'package:flutter/foundation.dart';
+import 'package:tracking_system_app/core/config/constants.dart';
 import 'package:tracking_system_app/core/config/supabase_config.dart';
+import 'package:tracking_system_app/core/pagination/page_result.dart';
+import 'package:tracking_system_app/core/pagination/paged_scroll_mixin.dart';
 import 'package:tracking_system_app/features/packages/domain/package.dart';
 
 class PackageService {
@@ -9,99 +12,269 @@ class PackageService {
 
   final _client = SupabaseConfig.client;
 
-  Future<List<Package>> fetchPackagesForTrip(String tripId) async {
-    final bridgeData = await _client
-        .from('operations_viajes_paquetes')
-        .select('paquete_id')
-        .eq('viaje_id', tripId)
-        .filter('deleted_at', 'is', null);
-
-    final packageIds = (bridgeData as List)
-        .map((e) => e['paquete_id'] as String?)
-        .where((id) => id != null && id.isNotEmpty)
-        .cast<String>()
-        .toList();
-
-    if (packageIds.isEmpty) return [];
-
-    return _fetchPackagesByIds(packageIds);
-  }
-
-  Future<List<Package>> fetchAllPackages(String empresaId) async {
-    final data = await _client
-        .from(SupabaseConfig.viewPaquetesCompleto)
-        .select()
-        .eq('empresa_id', empresaId);
-
-    return _buildPackages(data as List);
-  }
-
-  Future<List<Package>> _fetchPackagesByIds(List<String> ids) async {
-    final orClauses = ids.map((id) => 'id.eq.$id').join(',');
-    final data = await _client
-        .from(SupabaseConfig.viewPaquetesCompleto)
-        .select()
-        .or(orClauses);
-
-    return _buildPackages(data as List);
-  }
-
-  Future<List<Package>> _buildPackages(List packagesData) async {
-    final addressIds = packagesData
-        .where((p) => p['direccion_destino'] != null)
-        .map((p) => p['direccion_destino'] as String)
-        .where((id) => id.isNotEmpty)
-        .toList();
-
-    final Map<String, Map<String, dynamic>> addressMap = {};
-    if (addressIds.isNotEmpty) {
-      try {
-        final addrClauses = addressIds.map((id) => 'id.eq.$id').join(',');
-        final addressData = await _client
-            .from('customers_direcciones')
-            .select('id, direccion, ciudad, provincia')
-            .or(addrClauses);
-
-        for (final addr in addressData) {
-          addressMap[addr['id'] as String] = addr;
-        }
-      } catch (e) {
-        debugPrint('PackageService: error loading addresses: $e');
-      }
+  Future<String?> _resolveEmpresaId() async {
+    final user = _client.auth.currentUser;
+    if (user == null) return null;
+    try {
+      final core = await _client
+          .from('core_usuarios')
+          .select('empresa_id')
+          .eq('auth_user_id', user.id)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      return core?['empresa_id'] as String?;
+    } catch (e) {
+      debugPrint('PackageService._resolveEmpresaId: $e');
+      return null;
     }
+  }
 
-    return packagesData.map((p) {
-      final addr = p['direccion_destino'] != null
-          ? addressMap[p['direccion_destino'] as String]
-          : null;
-      return _mapToPackage(p, addr);
+  Future<Map<String, String>> _loadEstadoMap(Iterable<String> estadoIds) async {
+    final ids = estadoIds.where((e) => e.isNotEmpty).toSet().toList();
+    if (ids.isEmpty) return {};
+    try {
+      final estados = await _client
+          .from('shipping_estados_envio')
+          .select('id,codigo,nombre')
+          .inFilter('id', ids);
+      final map = <String, String>{};
+      for (final e in estados as List) {
+        final id = e['id'] as String?;
+        if (id == null) continue;
+        map[id] =
+            (e['nombre'] as String?) ?? (e['codigo'] as String?) ?? '';
+      }
+      return map;
+    } catch (e) {
+      debugPrint('PackageService._loadEstadoMap: $e');
+      return {};
+    }
+  }
+
+  Future<Map<String, String>> _loadClienteMap(Iterable<String> clienteIds) async {
+    final ids = clienteIds.where((e) => e.isNotEmpty).toSet().toList();
+    if (ids.isEmpty) return {};
+    try {
+      final clientes = await _client
+          .from('customers_clientes')
+          .select('id,nombre')
+          .inFilter('id', ids);
+      final map = <String, String>{};
+      for (final c in clientes as List) {
+        map[c['id'] as String] = c['nombre'] as String? ?? '';
+      }
+      return map;
+    } catch (e) {
+      debugPrint('PackageService clientes: $e');
+      return {};
+    }
+  }
+
+  Future<List<Package>> _mapRows(List rows) async {
+    if (rows.isEmpty) return [];
+    final estadoMap = await _loadEstadoMap(
+      rows.map((p) => p['estado_actual'] as String? ?? ''),
+    );
+    final clienteMap = await _loadClienteMap(
+      rows.map((p) => p['cliente_id'] as String? ?? ''),
+    );
+
+    return rows.map((p) {
+      final map = Map<String, dynamic>.from(p as Map);
+      final estId = map['estado_actual'] as String?;
+      map['estado_nombre'] = estId != null ? (estadoMap[estId] ?? '') : '';
+      final clienteId = map['cliente_id'] as String?;
+      if (clienteId != null && clienteMap.containsKey(clienteId)) {
+        map['destinatario_nombre'] = clienteMap[clienteId];
+      }
+      return _mapToPackage(map);
     }).toList();
   }
 
-  Package _mapToPackage(Map<String, dynamic> p, Map<String, dynamic>? addr) {
-    final statusName = (p['estado_nombre'] as String?) ?? '';
-    final prioridad = (p['prioridad'] as String?) ?? 'normal';
+  /// Página de inventario de la empresa (preferido para UI).
+  Future<PageResult<Package>> fetchEmpresaPackagesPage({
+    int page = 0,
+    int pageSize = AppConstants.packagesPageSize,
+    String? search,
+  }) async {
+    final empresaId = await _resolveEmpresaId();
+    if (empresaId == null) {
+      return PageResult.empty(page: page, pageSize: pageSize);
+    }
 
-    String addressText = '';
-    if (addr != null) {
-      addressText = addr['direccion'] as String? ?? '';
-      final ciudad = addr['ciudad'] as String?;
-      if (ciudad != null && ciudad.isNotEmpty) {
-        addressText =
-            addressText.isNotEmpty ? '$addressText, $ciudad' : ciudad;
+    final range = PageRange.of(page, pageSize: pageSize);
+
+    try {
+      var query = _client
+          .from('shipping_paquetes')
+          .select(
+            'id,tracking_number,peso,prioridad,contenido,requiere_firma,requiere_otp,'
+            'tipo,fragil,valor_declarado,fecha_entrega_estimada,fecha_entrega_real,'
+            'estado_actual,direccion_destino,cliente_id',
+          )
+          .eq('empresa_id', empresaId)
+          .filter('deleted_at', 'is', null);
+
+      final q = search?.trim();
+      if (q != null && q.isNotEmpty) {
+        query = query.or(
+          'tracking_number.ilike.%$q%,contenido.ilike.%$q%',
+        );
+      }
+
+      final data = await query
+          .order('created_at', ascending: false)
+          .range(range.from, range.to);
+
+      final items = await _mapRows(data as List);
+      return PageResult(
+        items: items,
+        page: page,
+        pageSize: range.pageSize,
+        hasMore: items.length >= range.pageSize,
+      );
+    } catch (e, st) {
+      debugPrint('fetchEmpresaPackagesPage: $e\n$st');
+      return PageResult.empty(page: page, pageSize: pageSize);
+    }
+  }
+
+  /// Página de paquetes del viaje (ovp). Si no hay, cae a inventario paginado.
+  Future<PageResult<Package>> fetchPackagesForTripPage(
+    String tripId, {
+    int page = 0,
+    int pageSize = AppConstants.packagesPageSize,
+    String? search,
+  }) async {
+    if (tripId.isEmpty) {
+      return fetchEmpresaPackagesPage(
+        page: page,
+        pageSize: pageSize,
+        search: search,
+      );
+    }
+
+    try {
+      final range = PageRange.of(page, pageSize: pageSize);
+      final bridge = await _client
+          .from('operations_viajes_paquetes')
+          .select('paquete_id')
+          .eq('viaje_id', tripId)
+          .filter('deleted_at', 'is', null)
+          .range(range.from, range.to);
+
+      final packageIds = (bridge as List)
+          .map((e) => e['paquete_id'] as String?)
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toList();
+
+      if (packageIds.isEmpty) {
+        // Primera página vacía → inventario empresa
+        if (page == 0) {
+          return fetchEmpresaPackagesPage(
+            page: page,
+            pageSize: pageSize,
+            search: search,
+          );
+        }
+        return PageResult.empty(page: page, pageSize: pageSize);
+      }
+
+      final items = await fetchPackagesByIdsWithEstado(packageIds);
+      return PageResult(
+        items: items,
+        page: page,
+        pageSize: pageSize,
+        hasMore: packageIds.length >= pageSize,
+      );
+    } catch (e) {
+      debugPrint('fetchPackagesForTripPage: $e');
+      return fetchEmpresaPackagesPage(
+        page: page,
+        pageSize: pageSize,
+        search: search,
+      );
+    }
+  }
+
+  Future<List<String>> fetchPackageIdsForTrip(String tripId) async {
+    // Solo primera página de IDs (entrega / escaneo) — acotado
+    final page = await fetchPackagesForTripPage(
+      tripId,
+      page: 0,
+      pageSize: AppConstants.packagesPageSize,
+    );
+    return page.items.map((p) => p.id).toList();
+  }
+
+  Future<List<Package>> fetchPackagesByIdsWithEstado(List<String> ids) async {
+    if (ids.isEmpty) return [];
+    // Nunca más de maxPageSize IDs por request
+    final limited = ids.take(AppConstants.maxPageSize).toList();
+    try {
+      final data = await _client
+          .from('shipping_paquetes')
+          .select(
+            'id,tracking_number,peso,prioridad,contenido,requiere_firma,requiere_otp,'
+            'tipo,fragil,valor_declarado,fecha_entrega_estimada,fecha_entrega_real,'
+            'estado_actual,direccion_destino,cliente_id',
+          )
+          .inFilter('id', limited);
+
+      return _mapRows(data as List);
+    } catch (e) {
+      debugPrint('fetchPackagesByIdsWithEstado: $e');
+      try {
+        final orClauses = limited.map((id) => 'id.eq.$id').join(',');
+        final data = await _client
+            .from('shipping_paquetes')
+            .select(
+              'id,tracking_number,peso,prioridad,contenido,requiere_firma,requiere_otp,'
+              'tipo,fragil,valor_declarado,fecha_entrega_estimada,fecha_entrega_real,'
+              'estado_actual,direccion_destino,cliente_id',
+            )
+            .or(orClauses);
+        return _mapRows(data as List);
+      } catch (e2) {
+        debugPrint('fetchPackagesByIdsWithEstado OR: $e2');
+        return [];
       }
     }
+  }
+
+  /// Compat: primera página del inventario.
+  Future<List<Package>> fetchEmpresaPackages() async {
+    final page = await fetchEmpresaPackagesPage(page: 0);
+    return page.items;
+  }
+
+  Future<List<Package>> fetchPackagesForTrip(String tripId) async {
+    final page = await fetchPackagesForTripPage(tripId, page: 0);
+    return page.items;
+  }
+
+  Future<List<Package>> fetchAllPackages(String empresaId) async {
+    return fetchEmpresaPackages();
+  }
+
+  Package _mapToPackage(Map<String, dynamic> p) {
+    final statusName = (p['estado_nombre'] as String?)
+        ?? (p['estado_codigo'] as String?)
+        ?? '';
+    final prioridad = (p['prioridad'] as String?) ?? 'normal';
 
     final rawWeight = p['peso'];
     final weight = rawWeight != null
         ? '${(rawWeight as num).toStringAsFixed(1)} kg'
-        : 'N/A';
+        : '—';
 
     return Package(
       id: p['id'] as String,
       trackingNumber: (p['tracking_number'] as String?) ?? '',
-      recipientName: p['destinatario_nombre'] as String?,
-      address: addressText.isNotEmpty ? addressText : null,
+      recipientName: p['destinatario_nombre'] as String?
+          ?? p['cliente_nombre'] as String?,
+      address: null,
       status: _mapStatus(statusName),
       priority: _mapPriority(prioridad),
       weight: weight,
@@ -122,18 +295,16 @@ class PackageService {
   }
 
   PackageStatus _mapStatus(String statusName) {
-    switch (statusName.toLowerCase()) {
-      case 'en tránsito':
-      case 'en_transito':
-      case 'en ruta':
-      case 'ruta':
-        return PackageStatus.inTransit;
-      case 'entregado':
-      case 'completado':
-        return PackageStatus.delivered;
-      default:
-        return PackageStatus.pending;
+    final s = statusName.toLowerCase().trim();
+    if (s.contains('entreg')) return PackageStatus.delivered;
+    if (s.contains('ruta') ||
+        s.contains('reparto') ||
+        s.contains('tránsito') ||
+        s.contains('transito') ||
+        s.contains('despach')) {
+      return PackageStatus.inTransit;
     }
+    return PackageStatus.pending;
   }
 
   PackagePriority _mapPriority(String prioridad) {

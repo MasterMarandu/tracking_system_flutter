@@ -1,103 +1,84 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:tracking_system_app/core/pagination/paged_scroll_mixin.dart';
+import 'package:tracking_system_app/features/dashboard/providers/bootstrap_provider.dart';
+import 'package:tracking_system_app/features/incidents/domain/incident.dart';
+import 'package:tracking_system_app/features/incidents/domain/incidents_provider.dart';
 
-enum IncidentType {
-  delay('Delay', Icons.access_time),
-  damage('Damage', Icons.broken_image_outlined),
-  theft('Theft', Icons.warning_amber),
-  wrongAddress('Wrong Address', Icons.location_off_outlined),
-  weather('Weather', Icons.cloud_queue),
-  vehicleBreakdown('Vehicle Breakdown', Icons.car_crash_outlined),
-  other('Other', Icons.more_horiz);
-
-  final String label;
-  final IconData icon;
-  const IncidentType(this.label, this.icon);
-}
-
-enum IncidentStatus { open, inProgress, resolved }
-
-class Incident {
-  final String id;
-  final IncidentType type;
-  final String description;
-  final DateTime date;
-  final IncidentStatus status;
-  final String? packageId;
-
-  const Incident({
-    required this.id,
-    required this.type,
-    required this.description,
-    required this.date,
-    required this.status,
-    this.packageId,
-  });
-}
-
-class IncidentsScreen extends StatefulWidget {
+class IncidentsScreen extends ConsumerStatefulWidget {
   const IncidentsScreen({super.key});
 
   @override
-  State<IncidentsScreen> createState() => _IncidentsScreenState();
+  ConsumerState<IncidentsScreen> createState() => _IncidentsScreenState();
 }
 
-class _IncidentsScreenState extends State<IncidentsScreen> {
-  final List<Incident> _incidents = [
-    Incident(
-      id: 'INC-001',
-      type: IncidentType.delay,
-      description: 'Package delayed due to traffic congestion on highway.',
-      date: DateTime.now().subtract(const Duration(hours: 2)),
-      status: IncidentStatus.open,
-      packageId: 'PKG-12345',
-    ),
-    Incident(
-      id: 'INC-002',
-      type: IncidentType.damage,
-      description: 'Box found with visible water damage upon pickup.',
-      date: DateTime.now().subtract(const Duration(days: 1)),
-      status: IncidentStatus.inProgress,
-      packageId: 'PKG-67890',
-    ),
-    Incident(
-      id: 'INC-003',
-      type: IncidentType.wrongAddress,
-      description: 'Recipient address does not exist. Street name incorrect.',
-      date: DateTime.now().subtract(const Duration(days: 2)),
-      status: IncidentStatus.resolved,
-      packageId: 'PKG-11111',
-    ),
-    Incident(
-      id: 'INC-004',
-      type: IncidentType.vehicleBreakdown,
-      description: 'Flat tire on delivery vehicle. Assistance requested.',
-      date: DateTime.now().subtract(const Duration(days: 3)),
-      status: IncidentStatus.resolved,
-    ),
-  ];
+class _IncidentsScreenState extends ConsumerState<IncidentsScreen>
+    with PagedScrollMixin {
+  @override
+  void onLoadMoreRequested() {
+    ref.read(incidentsPagedProvider.notifier).loadMore();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final state = ref.watch(incidentsPagedProvider);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Incidents'),
+        title: const Text('Incidencias'),
         centerTitle: true,
       ),
-      body: _incidents.isEmpty
-          ? _buildEmptyState(theme)
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _incidents.length,
-              itemBuilder: (context, index) {
-                return _buildIncidentCard(theme, _incidents[index]);
-              },
-            ),
+      body: RefreshIndicator(
+        onRefresh: () => ref.read(incidentsPagedProvider.notifier).refresh(),
+        child: state.isInitialLoading
+            ? ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: const [
+                  SizedBox(height: 160),
+                  Center(child: CircularProgressIndicator()),
+                ],
+              )
+            : state.error != null && state.items.isEmpty
+                ? ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      SizedBox(
+                        height: MediaQuery.of(context).size.height * 0.5,
+                        child: _buildError(theme, state.error!),
+                      ),
+                    ],
+                  )
+                : state.items.isEmpty
+                    ? ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        children: [
+                          SizedBox(
+                            height: MediaQuery.of(context).size.height * 0.55,
+                            child: _buildEmptyState(theme),
+                          ),
+                        ],
+                      )
+                    : ListView.builder(
+                        controller: pagedScrollController,
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.all(16),
+                        itemCount: state.items.length + 1,
+                        itemBuilder: (context, index) {
+                          if (index >= state.items.length) {
+                            return buildLoadMoreFooter(
+                              isLoadingMore: state.isLoadingMore,
+                              hasMore: state.hasMore,
+                            );
+                          }
+                          return _buildIncidentCard(theme, state.items[index]);
+                        },
+                      ),
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showReportIncidentSheet(context),
         icon: const Icon(Icons.add),
-        label: const Text('Report'),
+        label: const Text('Reportar'),
       ),
     );
   }
@@ -110,14 +91,41 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
           Icon(Icons.check_circle_outline,
               size: 64, color: theme.colorScheme.primary),
           const SizedBox(height: 16),
-          Text('No incidents reported',
-              style: theme.textTheme.titleMedium),
+          Text('Sin incidencias', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
-          Text('All deliveries are running smoothly',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              )),
+          Text(
+            'Las incidencias de tus viajes aparecerán aquí.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildError(ThemeData theme, String error) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, color: theme.colorScheme.error, size: 48),
+            const SizedBox(height: 12),
+            const Text('No se pudieron cargar las incidencias'),
+            const SizedBox(height: 8),
+            Text(error,
+                textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () =>
+                  ref.read(incidentsPagedProvider.notifier).refresh(),
+              child: const Text('Reintentar'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -125,6 +133,11 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
   Widget _buildIncidentCard(ThemeData theme, Incident incident) {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.5)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -133,8 +146,7 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
             Row(
               children: [
                 CircleAvatar(
-                  backgroundColor:
-                      theme.colorScheme.primaryContainer,
+                  backgroundColor: theme.colorScheme.primaryContainer,
                   child: Icon(
                     incident.type.icon,
                     color: theme.colorScheme.onPrimaryContainer,
@@ -149,11 +161,14 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
                       Text(
                         incident.type.label,
                         style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                       Text(
-                        incident.id,
+                        [
+                          if (incident.tripCode != null) incident.tripCode!,
+                          incident.id.substring(0, 8),
+                        ].join(' · '),
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
@@ -161,15 +176,12 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
                     ],
                   ),
                 ),
-                _buildStatusChip(theme, incident.status),
+                _buildStatusChip(incident.status),
               ],
             ),
             const SizedBox(height: 12),
-            Text(
-              incident.description,
-              style: theme.textTheme.bodyMedium,
-            ),
-            if (incident.packageId != null) ...[
+            Text(incident.description, style: theme.textTheme.bodyMedium),
+            if (incident.packageTracking != null) ...[
               const SizedBox(height: 8),
               Row(
                 children: [
@@ -177,7 +189,7 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
                       size: 16, color: theme.colorScheme.onSurfaceVariant),
                   const SizedBox(width: 4),
                   Text(
-                    incident.packageId!,
+                    incident.packageTracking!,
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -205,24 +217,18 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
     );
   }
 
-  Widget _buildStatusChip(ThemeData theme, IncidentStatus status) {
-    final (label, color) = switch (status) {
-      IncidentStatus.open => ('Open', Colors.orange),
-      IncidentStatus.inProgress => ('In Progress', Colors.blue),
-      IncidentStatus.resolved => ('Resolved', Colors.green),
-    };
-
+  Widget _buildStatusChip(IncidentStatus status) {
     return Chip(
       label: Text(
-        label,
+        status.label,
         style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w600,
-          color: color,
+          color: status.color,
         ),
       ),
-      backgroundColor: color.withValues(alpha: 0.1),
-      side: BorderSide(color: color.withValues(alpha: 0.3)),
+      backgroundColor: status.color.withValues(alpha: 0.1),
+      side: BorderSide(color: status.color.withValues(alpha: 0.3)),
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
     );
@@ -231,148 +237,174 @@ class _IncidentsScreenState extends State<IncidentsScreen> {
   String _formatDate(DateTime date) {
     final now = DateTime.now();
     final diff = now.difference(date);
-
-    if (diff.inHours < 1) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    return '${date.month}/${date.day}/${date.year}';
+    if (diff.inMinutes < 1) return 'Ahora';
+    if (diff.inHours < 1) return 'Hace ${diff.inMinutes} min';
+    if (diff.inHours < 24) return 'Hace ${diff.inHours} h';
+    if (diff.inDays < 7) return 'Hace ${diff.inDays} d';
+    return '${date.day}/${date.month}/${date.year}';
   }
 
   void _showReportIncidentSheet(BuildContext context) {
     final theme = Theme.of(context);
     IncidentType? selectedType;
     final descriptionController = TextEditingController();
-    final locationController = TextEditingController();
+    var submitting = false;
 
-    showModalBottomSheet(
+    final bootstrap = ref.read(bootstrapProvider).valueOrNull;
+    final tripId = bootstrap?.trip?.id;
+
+    showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
+      showDragHandle: true,
       builder: (ctx) {
+        final media = MediaQuery.of(ctx);
+        final maxHeight = media.size.height * 0.85;
+
         return StatefulBuilder(
           builder: (ctx, setSheetState) {
             return Padding(
-              padding: EdgeInsets.only(
-                left: 24,
-                right: 24,
-                top: 24,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.onSurfaceVariant
-                            .withValues(alpha: 0.4),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Report Incident',
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  DropdownButtonFormField<IncidentType>(
-                    value: selectedType,
-                    decoration: const InputDecoration(
-                      labelText: 'Incident Type',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.category_outlined),
-                    ),
-                    items: IncidentType.values.map((type) {
-                      return DropdownMenuItem(
-                        value: type,
-                        child: Row(
-                          children: [
-                            Icon(type.icon, size: 20),
-                            const SizedBox(width: 8),
-                            Text(type.label),
-                          ],
+              padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: maxHeight),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'Reportar incidencia',
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
                         ),
-                      );
-                    }).toList(),
-                    onChanged: (val) {
-                      setSheetState(() => selectedType = val);
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: descriptionController,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'Description',
-                      border: OutlineInputBorder(),
-                      alignLabelWithHint: true,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      ScaffoldMessenger.of(ctx).showSnackBar(
-                        const SnackBar(content: Text('Photo captured')),
-                      );
-                    },
-                    icon: const Icon(Icons.camera_alt_outlined),
-                    label: const Text('Add Photo'),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: locationController,
-                    decoration: const InputDecoration(
-                      labelText: 'Location',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.location_on_outlined),
-                      suffixIcon: Icon(Icons.my_location),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    onPressed: () {
-                      if (selectedType != null &&
-                          descriptionController.text.isNotEmpty) {
-                        setState(() {
-                          _incidents.insert(
-                            0,
-                            Incident(
-                              id: 'INC-${(_incidents.length + 1).toString().padLeft(3, '0')}',
-                              type: selectedType!,
-                              description: descriptionController.text,
-                              date: DateTime.now(),
-                              status: IncidentStatus.open,
+                      ),
+                      if (bootstrap?.trip?.code != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          'Viaje ${bootstrap!.trip!.code}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 20),
+                      // Selector de tipo sin DropdownButtonFormField:
+                      // evita hasSize/Flexible en overlay del menú.
+                      Text(
+                        'Tipo de incidencia',
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: IncidentType.values.map((type) {
+                          final selected = selectedType == type;
+                          return FilterChip(
+                            selected: selected,
+                            avatar: Icon(type.icon, size: 16),
+                            label: Text(type.label),
+                            onSelected: (_) {
+                              setSheetState(() => selectedType = type);
+                            },
+                            showCheckmark: false,
+                            selectedColor: theme.colorScheme.primaryContainer,
+                            labelStyle: TextStyle(
+                              fontSize: 13,
+                              fontWeight:
+                                  selected ? FontWeight.w600 : FontWeight.w400,
+                              color: selected
+                                  ? theme.colorScheme.onPrimaryContainer
+                                  : theme.colorScheme.onSurface,
                             ),
                           );
-                        });
-                        Navigator.of(ctx).pop();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Incident reported successfully'),
-                          ),
-                        );
-                      }
-                    },
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                    child: const Text('Submit Report'),
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: descriptionController,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Descripción',
+                          border: OutlineInputBorder(),
+                          alignLabelWithHint: true,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      FilledButton(
+                        onPressed: submitting
+                            ? null
+                            : () async {
+                                if (selectedType == null ||
+                                    descriptionController.text.trim().isEmpty) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Completa tipo y descripción',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
+                                setSheetState(() => submitting = true);
+                                try {
+                                  await ref
+                                      .read(incidentsPagedProvider.notifier)
+                                      .report(
+                                        type: selectedType!,
+                                        description:
+                                            descriptionController.text.trim(),
+                                        tripId: tripId,
+                                      );
+                                  if (!ctx.mounted) return;
+                                  Navigator.of(ctx).pop();
+                                  if (!context.mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Incidencia reportada correctamente',
+                                      ),
+                                      backgroundColor: Color(0xFF176351),
+                                    ),
+                                  );
+                                } catch (e) {
+                                  setSheetState(() => submitting = false);
+                                  if (!ctx.mounted) return;
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Error: $e'),
+                                      backgroundColor: Colors.red,
+                                    ),
+                                  );
+                                }
+                              },
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: submitting
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Text('Enviar reporte'),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             );
           },
         );
       },
-    );
+    ).whenComplete(descriptionController.dispose);
   }
 }
+

@@ -26,6 +26,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   DeviceStatus _deviceStatus = const DeviceStatus();
   List<ChecklistItem> _checklistItems = _defaultChecklistItems();
   String? _lastAppliedTripId;
+  /// Trip id que ya sincronizó providers (para reset de delivery al cambiar viaje).
+  String? _lastSyncedTripId;
 
   @override
   void initState() {
@@ -43,10 +45,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   void _onBootstrapChanged(DriverBootstrap next) {
-    setState(() => _applyBootstrap(next));
+    if (!mounted) return;
+    // 1) Solo estado local del widget (seguro en el ciclo de vida)
+    setState(() => _applyBootstrapLocal(next));
+    // 2) Providers: DESPUÉS del build (Riverpod no permite mutarlos en init/build)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _syncProvidersFromBootstrap(next);
+    });
   }
 
-  void _applyBootstrap(DriverBootstrap? bootstrap) {
+  void _applyBootstrapLocal(DriverBootstrap? bootstrap) {
     if (!mounted) return;
     final b = bootstrap;
 
@@ -55,7 +64,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       _tripData = const TripData();
       _deviceStatus = const DeviceStatus(gps: false, internet: false, synced: false);
       _checklistItems = const [];
-      ref.read(tripStateProvider.notifier).forceState(TripState.noTrip);
       return;
     }
 
@@ -74,7 +82,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     if (b.trip == null) {
       _lastAppliedTripId = null;
       _tripData = const TripData().copyWith(driverName: b.user.name);
-      ref.read(tripStateProvider.notifier).forceState(TripState.noTrip);
       return;
     }
 
@@ -113,30 +120,42 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final newTripId = b.trip?.id;
     if (newTripId != _lastAppliedTripId) {
       _lastAppliedTripId = newTripId;
+    }
+  }
+
+  void _syncProvidersFromBootstrap(DriverBootstrap b) {
+    if (!mounted) return;
+
+    if (!b.user.active || b.trip == null) {
+      _lastSyncedTripId = null;
+      ref.read(tripStateProvider.notifier).forceState(TripState.noTrip);
+      return;
+    }
+
+    final tripId = b.trip!.id;
+    if (tripId != _lastSyncedTripId) {
+      _lastSyncedTripId = tripId;
       ref.read(deliveryFlowProvider.notifier).reset();
     }
 
     final sessionState = b.resolveState();
-    switch (sessionState) {
-      case DriverSessionState.tripReady:
-        ref.read(tripStateProvider.notifier).forceState(TripState.preTrip);
-      case DriverSessionState.tripInProgress:
-        ref.read(tripStateProvider.notifier).forceState(TripState.inRoute);
-      case DriverSessionState.deliveryInProgress:
-        ref.read(tripStateProvider.notifier).forceState(TripState.delivering);
-        if (b.deliverySession != null) {
-          ref
-              .read(deliveryFlowProvider.notifier)
-              .restoreFromSession(b.deliverySession!);
-        }
-      case DriverSessionState.paused:
-        ref.read(tripStateProvider.notifier).forceState(TripState.paused);
-      case DriverSessionState.completed:
-        ref.read(tripStateProvider.notifier).forceState(TripState.completed);
-      case DriverSessionState.noTripAssigned:
-        ref.read(tripStateProvider.notifier).forceState(TripState.noTrip);
-      default:
-        ref.read(tripStateProvider.notifier).forceState(TripState.preTrip);
+    final TripState tripState = switch (sessionState) {
+      DriverSessionState.tripReady => TripState.preTrip,
+      DriverSessionState.tripInProgress => TripState.inRoute,
+      DriverSessionState.deliveryInProgress => TripState.delivering,
+      DriverSessionState.paused => TripState.paused,
+      DriverSessionState.completed => TripState.completed,
+      DriverSessionState.noTripAssigned => TripState.noTrip,
+      _ => TripState.preTrip,
+    };
+
+    ref.read(tripStateProvider.notifier).forceState(tripState);
+
+    if (sessionState == DriverSessionState.deliveryInProgress &&
+        b.deliverySession != null) {
+      ref
+          .read(deliveryFlowProvider.notifier)
+          .restoreFromSession(b.deliverySession!);
     }
   }
 

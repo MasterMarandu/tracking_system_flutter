@@ -176,7 +176,14 @@ class LocationService {
         'satelites': 0, // TODO: obtener del GPS
       };
 
-      // Datos para tracking_ultima_posicion (tabla cache - sin altitud)
+      // Siempre UTC con sufijo Z. DateTime.now().toIso8601String() manda hora
+      // local sin offset y Postgres la interpreta como UTC → "en línea" falla en web
+      // (umbral 120s sobre tracking_ultima_posicion.updated_at).
+      final nowUtc = DateTime.now().toUtc().toIso8601String();
+
+      // Cache materializada (PK vehiculo_id). El trigger
+      // trg_update_ultima_posicion también actualiza tras INSERT en tracking_gps;
+      // este upsert es respaldo si el trigger no está desplegado.
       final dataUltima = {
         'vehiculo_id': _activeVehicleId,
         'empresa_id': _activeEmpresaId,
@@ -192,8 +199,8 @@ class LocationService {
         'internet': true,
         'gps': true,
         'satelites': 0,
-        'created_at': DateTime.now().toIso8601String(),
-        'updated_at': DateTime.now().toIso8601String(),
+        'created_at': nowUtc,
+        'updated_at': nowUtc,
       };
 
       LogService.instance.info('📤 Enviando GPS a Supabase...');
@@ -202,7 +209,7 @@ class LocationService {
       await _client.from('tracking_gps').insert(dataGps);
       LogService.instance.info('✅ GPS insertado en tracking_gps');
 
-      // 2. Upsert en tracking_ultima_posicion (cache - solo columnas que existen)
+      // 2. Upsert en tracking_ultima_posicion (cache para mapa en vivo / online)
       await _client.from('tracking_ultima_posicion').upsert(
         dataUltima,
         onConflict: 'vehiculo_id',
@@ -210,7 +217,7 @@ class LocationService {
       LogService.instance.info('✅ Última posición actualizada');
 
       LogService.instance.debug(
-        'GPS enviado: ${position.latitude}, ${position.longitude}',
+        'GPS enviado: ${position.latitude}, ${position.longitude} @ $nowUtc',
       );
     } catch (e, st) {
       LogService.instance.error('❌ Error al enviar GPS', e);

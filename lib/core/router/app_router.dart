@@ -237,7 +237,7 @@ class _MoreScreen extends StatelessWidget {
           _buildMenuItem(
             context,
             icon: Icons.report_outlined,
-            title: 'Incidents',
+            title: 'Incidencias',
             onTap: () => context.push('/incidents'),
           ),
           _buildMenuItem(
@@ -249,13 +249,13 @@ class _MoreScreen extends StatelessWidget {
           _buildMenuItem(
             context,
             icon: Icons.person_outline,
-            title: 'Profile',
+            title: 'Perfil',
             onTap: () => context.push('/profile'),
           ),
           _buildMenuItem(
             context,
             icon: Icons.settings_outlined,
-            title: 'Settings',
+            title: 'Ajustes',
             onTap: () => context.push('/settings'),
           ),
         ],

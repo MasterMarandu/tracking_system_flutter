@@ -1,11 +1,11 @@
 {
-    "name": "tracking_system_app",
-    "short_name": "tracking_system_app",
+    "name": "Routio",
+    "short_name": "Routio",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F4F6F5",
+    "theme_color": "#206B5C",
+    "description": "Routio — App del conductor para logística y tracking GPS",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

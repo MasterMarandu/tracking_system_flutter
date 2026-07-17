@@ -65,27 +65,30 @@ class NavigationService {
       );
     }
 
-    // 3. Iniciar/reiniciar GPS tracking
+    // 3. Iniciar/reiniciar GPS tracking (siempre con el viaje actual)
+    // LocationService.startTracking ya reinicia si estaba activo.
     bool gpsStarted = false;
-    if (!LocationService.instance.isActive) {
+    try {
       await LocationService.instance.startTracking(
         tripId: ctx.tripId,
         vehicleId: ctx.vehiculoId,
         conductorId: ctx.conductorId,
         empresaId: ctx.empresaId,
       );
-      gpsStarted = true;
-    } else {
-      // Ya hay tracking activo — verificar si es el mismo viaje
-      gpsStarted = true;
+      gpsStarted = LocationService.instance.isActive;
+    } catch (e) {
+      debugPrint('NavigationService GPS start error: $e');
+      gpsStarted = false;
     }
 
     // 4. Activar viaje si se solicita (programado -> en_curso)
+    // Timestamps en UTC (mismo criterio que LocationService / Postgres timestamptz).
     if (activateTrip) {
+      final nowUtc = DateTime.now().toUtc().toIso8601String();
       await _client.from('operations_viajes').update({
         'estado': 'en_curso',
-        'hora_real_salida': DateTime.now().toIso8601String(),
-        'updated_at': DateTime.now().toIso8601String(),
+        'hora_real_salida': nowUtc,
+        'updated_at': nowUtc,
       }).eq('id', tripId);
     }
 
@@ -97,9 +100,10 @@ class NavigationService {
 
   /// Pausa un viaje y detiene el tracking GPS.
   Future<void> pauseTrip(String tripId) async {
+    final nowUtc = DateTime.now().toUtc().toIso8601String();
     await _client.from('operations_viajes').update({
       'estado': 'pausado',
-      'updated_at': DateTime.now().toIso8601String(),
+      'updated_at': nowUtc,
     }).eq('id', tripId);
 
     await LocationService.instance.stopTracking();
@@ -107,9 +111,10 @@ class NavigationService {
 
   /// Reanuda un viaje pausado y reinicia el tracking GPS.
   Future<NavigationResult> resumeTrip(String tripId) async {
+    final nowUtc = DateTime.now().toUtc().toIso8601String();
     await _client.from('operations_viajes').update({
       'estado': 'en_curso',
-      'updated_at': DateTime.now().toIso8601String(),
+      'updated_at': nowUtc,
     }).eq('id', tripId);
 
     return openNavigation(tripId: tripId, activateTrip: false);

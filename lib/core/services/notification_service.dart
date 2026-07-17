@@ -46,9 +46,9 @@ class NotificationService {
     required String title,
     required String body,
     String? payload,
-    String channelId = 'tracking_system',
-    String channelName = 'Tracking System',
-    String channelDescription = 'GPS Tracking notifications',
+    String channelId = 'routio_tracking',
+    String channelName = 'Routio',
+    String channelDescription = 'Seguimiento GPS y alertas de operación',
   }) async {
     final androidDetails = AndroidNotificationDetails(
       channelId,

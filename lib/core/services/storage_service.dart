@@ -139,4 +139,32 @@ class StorageService {
     if (value == null) return null;
     return DateTime.tryParse(value);
   }
+
+  Future<void> saveBool(String key, bool value) async {
+    await write(key, value ? 'true' : 'false');
+  }
+
+  Future<bool> getBool(String key, {bool defaultValue = false}) async {
+    final value = await read(key);
+    if (value == null) return defaultValue;
+    return value == 'true' || value == '1';
+  }
+
+  Future<void> saveNotificationsEnabled(bool value) =>
+      saveBool(AppConstants.keyNotificationsEnabled, value);
+
+  Future<bool> getNotificationsEnabled() =>
+      getBool(AppConstants.keyNotificationsEnabled, defaultValue: true);
+
+  Future<void> saveTripAlertsEnabled(bool value) =>
+      saveBool(AppConstants.keyTripAlertsEnabled, value);
+
+  Future<bool> getTripAlertsEnabled() =>
+      getBool(AppConstants.keyTripAlertsEnabled, defaultValue: true);
+
+  Future<void> saveKeepScreenOn(bool value) =>
+      saveBool(AppConstants.keyKeepScreenOn, value);
+
+  Future<bool> getKeepScreenOn() =>
+      getBool(AppConstants.keyKeepScreenOn, defaultValue: false);
 }

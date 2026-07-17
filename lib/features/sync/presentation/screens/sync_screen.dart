@@ -226,7 +226,7 @@ class _SyncScreenState extends ConsumerState<SyncScreen> {
                   height: 20,
                   child: CircularProgressIndicator(
                     strokeWidth: 2.5,
-                    color: Color(0xFF1565C0),
+                    color: Color(0xFF206B5C),
                   ),
                 ),
                 const SizedBox(width: 12),

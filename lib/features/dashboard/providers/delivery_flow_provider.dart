@@ -140,23 +140,33 @@ class DeliveryFlowController extends Notifier<DeliveryFlowState> {
     required String? stopId,
     required String? checkpointId,
     required int packagesDelivered,
+    List<String>? packageIds,
   }) async {
+    // outcome.name → "complete" | "withIncident" — mapear a lo que espera el RPC
+    final rawOutcome = state.outcome.name;
+    final outcome = rawOutcome == 'withIncident' || rawOutcome == 'incident'
+        ? 'incident'
+        : 'complete';
+
+    final ids = packageIds ?? state.scannedPackageIds.toList();
+
     await ref.read(syncEngineProvider.notifier).enqueueOperation(
           SyncOperationType.completeDelivery,
           {
             'tripId': tripId,
             if (stopId != null) 'stopId': stopId,
             if (checkpointId != null) 'checkpointId': checkpointId,
-            'outcome': state.outcome.name,
-            'packagesDelivered': packagesDelivered,
+            'outcome': outcome,
+            'packagesDelivered':
+                packagesDelivered > 0 ? packagesDelivered : ids.length,
             if (state.incidentReason != null)
               'incidentReason': state.incidentReason,
-            'scannedPackages': state.scannedPackageIds.toList(),
+            'scannedPackages': ids,
             'photoTaken': state.photoTaken,
             'signatureCaptured':
                 state.signatureStrokes.expand((s) => s).isNotEmpty,
             'otpVerified': state.otpVerified,
-            'completedAt': DateTime.now().toIso8601String(),
+            'completedAt': DateTime.now().toUtc().toIso8601String(),
           },
         );
 

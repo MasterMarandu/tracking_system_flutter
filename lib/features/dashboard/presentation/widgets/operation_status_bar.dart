@@ -182,7 +182,7 @@ class OperationStatusBar extends StatelessWidget {
         color = Colors.grey;
       case TripState.inRoute:
         label = 'En ruta';
-        color = const Color(0xFF1565C0);
+        color = const Color(0xFF206B5C);
       case TripState.geofenceEntry:
         label = 'En destino';
         color = Colors.orange;

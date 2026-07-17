@@ -39,7 +39,7 @@ class ChecklistItem {
       case ChecklistStatus.withObservations:
         return Colors.orange;
       case ChecklistStatus.inProgress:
-        return const Color(0xFF1565C0);
+        return const Color(0xFF206B5C);
       case ChecklistStatus.pending:
         return Colors.grey;
     }

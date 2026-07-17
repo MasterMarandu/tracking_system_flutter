@@ -281,17 +281,44 @@ class SyncEngine extends Notifier<SyncState> {
   // ─── Sync Implementations ──────────────────────────
 
   Future<void> _syncCompleteDelivery(Map<String, dynamic> payload) async {
+    final scanned = payload['scannedPackages'];
+    final packageIds = scanned is List
+        ? scanned.map((e) => e.toString()).where((e) => e.isNotEmpty).toList()
+        : <String>[];
+
+    // outcome de la app: complete | incident
+    final outcome = (payload['outcome'] as String?) ?? 'complete';
+
     await SupabaseConfig.client.rpc(
       'complete_delivery',
       params: {
         'p_checkpoint_id': payload['checkpointId'],
         'p_trip_id': payload['tripId'],
         'p_stop_id': payload['stopId'],
-        'p_outcome': payload['outcome'],
+        'p_outcome': outcome,
         'p_incident_reason': payload['incidentReason'],
-        'p_packages_delivered': payload['packagesDelivered'],
+        'p_packages_delivered': payload['packagesDelivered'] ?? packageIds.length,
+        if (packageIds.isNotEmpty) 'p_package_ids': packageIds,
       },
     );
+
+    // Entrega con incidencia → también fila en delivery_incidencias
+    // (el RPC solo escribe eventos; la pantalla Incidencias lee esta tabla).
+    if (outcome == 'incident') {
+      try {
+        await _syncReportIncident({
+          'tripId': payload['tripId'],
+          'checkpointId': payload['checkpointId'],
+          'type': 'otra',
+          'description': (payload['incidentReason'] as String?)?.trim().isNotEmpty == true
+              ? payload['incidentReason']
+              : 'Entrega con incidencia',
+          'packageId': packageIds.isNotEmpty ? packageIds.first : null,
+        });
+      } catch (e) {
+        _logger.w('completeDelivery → delivery_incidencias: $e');
+      }
+    }
   }
 
   Future<void> _syncUpdateChecklist(Map<String, dynamic> payload) async {
@@ -344,13 +371,57 @@ class SyncEngine extends Notifier<SyncState> {
   }
 
   Future<void> _syncReportIncident(Map<String, dynamic> payload) async {
-    await SupabaseConfig.client.from('operations_incidentes').insert({
-      'viaje_id': payload['tripId'],
-      'checkpoint_id': payload['checkpointId'],
-      'tipo': payload['type'],
-      'descripcion': payload['description'],
-      'created_at': DateTime.now().toIso8601String(),
-    });
+    // Tabla canónica trackingV2: delivery_incidencias
+    final user = SupabaseConfig.client.auth.currentUser;
+    String? empresaId;
+    String? usuarioId;
+    if (user != null) {
+      final core = await SupabaseConfig.client
+          .from('core_usuarios')
+          .select('id, empresa_id')
+          .eq('auth_user_id', user.id)
+          .filter('deleted_at', 'is', null)
+          .maybeSingle();
+      empresaId = core?['empresa_id'] as String?;
+      usuarioId = core?['id'] as String?;
+    }
+    if (empresaId == null) {
+      throw Exception('Sin empresa para reportar incidencia');
+    }
+
+    final tipo = (payload['type'] as String?) ?? 'otra';
+    final row = await SupabaseConfig.client
+        .from(SupabaseConfig.tableIncidencias)
+        .insert({
+          'empresa_id': empresaId,
+          if (payload['tripId'] != null) 'viaje_id': payload['tripId'],
+          if (payload['packageId'] != null) 'paquete_id': payload['packageId'],
+          'tipo': tipo,
+          'descripcion': payload['description'] ?? '',
+          'estado': 'abierta',
+          if (usuarioId != null) 'created_by': usuarioId,
+        })
+        .select('id')
+        .single();
+
+    final tripId = payload['tripId'] as String?;
+    if (tripId != null) {
+      try {
+        await SupabaseConfig.client.from('operations_viajes_eventos').insert({
+          'viaje_id': tripId,
+          'tipo': 'incidente',
+          'descripcion': payload['description'] ?? tipo,
+          'metadata': {
+            'incidencia_id': row['id'],
+            'tipo': tipo,
+            'source': 'sync_engine',
+          },
+          if (usuarioId != null) 'usuario_id': usuarioId,
+        });
+      } catch (e) {
+        _logger.w('_syncReportIncident evento: $e');
+      }
+    }
   }
 
   Future<void> _syncUpdateTripStatus(Map<String, dynamic> payload) async {

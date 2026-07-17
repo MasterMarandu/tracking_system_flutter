@@ -19,9 +19,9 @@ class BackgroundService {
         onStart: onStart,
         autoStart: false,
         isForegroundMode: true,
-        notificationChannelId: 'tracking_system',
-        initialNotificationTitle: 'Tracking System',
-        initialNotificationContent: 'GPS tracking is active',
+        notificationChannelId: 'routio_tracking',
+        initialNotificationTitle: 'Routio',
+        initialNotificationContent: 'Seguimiento GPS activo',
         foregroundServiceNotificationId: 888,
       ),
       iosConfiguration: IosConfiguration(
@@ -78,8 +78,8 @@ void onStart(ServiceInstance service) async {
       if (await service.isForegroundService()) {
         // Update notification
         service.setForegroundNotificationInfo(
-          title: 'Tracking System',
-          content: 'GPS tracking active - ${DateTime.now().toString().substring(11, 19)}',
+          title: 'Routio',
+          content: 'GPS activo · ${DateTime.now().toString().substring(11, 19)}',
         );
       }
     }

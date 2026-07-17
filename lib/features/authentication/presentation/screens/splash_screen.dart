@@ -134,7 +134,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                   ],
                 ),
                 child: Icon(
-                  Icons.local_shipping_rounded,
+                  Icons.navigation_rounded,
                   size: 64,
                   color: theme.colorScheme.primary,
                 ),
@@ -142,19 +142,20 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
             ),
             const SizedBox(height: 24),
             const Text(
-              'FleetTrack',
+              'Routio',
               style: TextStyle(
-                fontSize: 32,
-                fontWeight: FontWeight.bold,
+                fontSize: 34,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.6,
                 color: Colors.white,
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Professional Logistics',
+              'App del conductor',
               style: TextStyle(
                 fontSize: 16,
-                color: Colors.white.withValues(alpha: 0.8),
+                color: Colors.white.withValues(alpha: 0.85),
               ),
             ),
             const SizedBox(height: 48),

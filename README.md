@@ -1,17 +1,26 @@
-# tracking_system_app
+# Routio — App del conductor
 
-A new Flutter project.
+App móvil Flutter del ecosistema **Routio** (misma base Supabase que la web).
 
-## Getting Started
+## Marca
 
-This project is a starting point for a Flutter application.
+- Nombre: **Routio**
+- Tagline: App del conductor
+- Color primario: `#206B5C` (igual que la web)
 
-A few resources to get you started if this is your first Flutter project:
+## Stack
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+- Flutter + Riverpod + Supabase
+- Geolocator / GPS → `tracking_gps` + `tracking_ultima_posicion`
+- Schema oficial: `logistics-trip-planner-interface/database/trackingV2.sql`
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Run
+
+```bash
+flutter pub get
+flutter run
+```
+
+## Notas
+
+El package Dart sigue llamándose `tracking_system_app` (imports internos). El nombre visible al usuario es **Routio**.

@@ -62,7 +62,7 @@ class AppTheme {
           backgroundColor: AppColors.primary,
           foregroundColor: Colors.white,
           elevation: 2,
-          shadowColor: AppColors.primary.withOpacity(0.3),
+          shadowColor: AppColors.primary.withValues(alpha: 0.3),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -90,15 +90,15 @@ class AppTheme {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: Colors.grey.shade50,
+        fillColor: AppColors.primarySoft.withValues(alpha: 0.45),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.grey.shade300),
+          borderSide: const BorderSide(color: AppColors.line),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.grey.shade300),
+          borderSide: const BorderSide(color: AppColors.lineStrong),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
@@ -116,7 +116,7 @@ class AppTheme {
           color: AppColors.textSecondaryLight,
         ),
         hintStyle: AppTextStyles.bodyMedium.copyWith(
-          color: AppColors.textSecondaryLight.withOpacity(0.6),
+          color: AppColors.textSecondaryLight.withValues(alpha: 0.6),
         ),
       ),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
@@ -132,7 +132,7 @@ class AppTheme {
         elevation: 6,
       ),
       chipTheme: ChipThemeData(
-        backgroundColor: AppColors.primaryLight.withOpacity(0.1),
+        backgroundColor: AppColors.primarySoft,
         labelStyle: AppTextStyles.chipText.copyWith(
           color: AppColors.primary,
         ),
@@ -158,8 +158,8 @@ class AppTheme {
           borderRadius: BorderRadius.circular(12),
         ),
       ),
-      dividerTheme: DividerThemeData(
-        color: Colors.grey.shade200,
+      dividerTheme: const DividerThemeData(
+        color: AppColors.line,
         thickness: 1,
       ),
     );
@@ -176,10 +176,10 @@ class AppTheme {
         secondaryContainer: AppColors.secondary,
         surface: AppColors.surfaceDark,
         error: AppColors.error,
-        onPrimary: Colors.black,
-        onSecondary: Colors.black,
+        onPrimary: Colors.white,
+        onSecondary: Colors.white,
         onSurface: AppColors.textPrimaryDark,
-        onError: Colors.black,
+        onError: Colors.white,
       ),
       scaffoldBackgroundColor: AppColors.backgroundDark,
       fontFamily: 'Inter',
@@ -220,9 +220,9 @@ class AppTheme {
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.primaryLight,
-          foregroundColor: Colors.black,
+          foregroundColor: Colors.white,
           elevation: 4,
-          shadowColor: AppColors.primaryLight.withOpacity(0.3),
+          shadowColor: AppColors.primaryLight.withValues(alpha: 0.3),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -276,7 +276,7 @@ class AppTheme {
           color: AppColors.textSecondaryDark,
         ),
         hintStyle: AppTextStyles.bodyMedium.copyWith(
-          color: AppColors.textSecondaryDark.withOpacity(0.6),
+          color: AppColors.textSecondaryDark.withValues(alpha: 0.6),
         ),
       ),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
@@ -288,11 +288,11 @@ class AppTheme {
       ),
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
         backgroundColor: AppColors.primaryLight,
-        foregroundColor: Colors.black,
+        foregroundColor: Colors.white,
         elevation: 6,
       ),
       chipTheme: ChipThemeData(
-        backgroundColor: AppColors.primary.withOpacity(0.2),
+        backgroundColor: AppColors.primary.withValues(alpha: 0.2),
         labelStyle: AppTextStyles.chipText.copyWith(
           color: AppColors.primaryLight,
         ),

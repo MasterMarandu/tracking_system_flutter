@@ -6,11 +6,14 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:tracking_system_app/core/config/supabase_config.dart';
+import 'package:tracking_system_app/core/pagination/page_result.dart';
+import 'package:tracking_system_app/core/pagination/paged_scroll_mixin.dart';
 import 'package:tracking_system_app/core/services/current_trip_service.dart';
 import 'package:tracking_system_app/core/services/navigation_service.dart';
 import 'package:tracking_system_app/features/dashboard/providers/bootstrap_provider.dart';
 
-// ==================== DESIGN TOKENS ====================
+// ==================== DESIGN TOKENS (Routio web) ====================
+// Alineados a logistics-trip-planner-interface/src/app/globals.css
 
 class _T {
   static const double xs = 4;
@@ -26,20 +29,42 @@ class _T {
   static const double fBodyLg = 15;
   static const double fTitle = 17;
   static const double fHeadline = 22;
-  static const Color primary = Color(0xFF0F172A);
-  static const Color accent = Color(0xFF2563EB);
-  static const Color success = Color(0xFF059669);
-  static const Color danger = Color(0xFFDC2626);
-  static const Color warning = Color(0xFFD97706);
-  static const Color neutral = Color(0xFF64748B);
-  static const Color neutralBg = Color(0xFFF1F5F9);
-  static const Color bg = Color(0xFFF8FAFC);
+
+  // --ink / --green / --canvas
+  static const Color primary = Color(0xFF206B5C); // brand green (botones, pills)
+  static const Color ink = Color(0xFF172521); // texto principal
+  static const Color accent = Color(0xFF206B5C);
+  static const Color accentDark = Color(0xFF174F44);
+  static const Color accentSoft = Color(0xFFE8F2EF);
+  static const Color success = Color(0xFF176351); // badge-green text
+  static const Color successBg = Color(0xFFECF7F3);
+  static const Color successBorder = Color(0xFFB7DFD0);
+  static const Color danger = Color(0xFFC74C4C);
+  static const Color dangerBg = Color(0xFFFFF0EF);
+  static const Color warning = Color(0xFF9A5C09); // badge-gold text
+  static const Color warningBg = Color(0xFFFFF9EC);
+  static const Color warningBorder = Color(0xFFF0C98A);
+  static const Color info = Color(0xFF1E5F8F); // badge-blue (programado)
+  static const Color infoBg = Color(0xFFEEF5FC);
+  static const Color infoBorder = Color(0xFFB9D5EC);
+  static const Color neutral = Color(0xFF6E7B77); // --muted
+  static const Color neutralBg = Color(0xFFF2F4F3); // badge-gray bg
+  static const Color line = Color(0xFFE2E8E5);
+  static const Color lineStrong = Color(0xFFD4DDDA);
+  static const Color bg = Color(0xFFF4F6F5); // --canvas
+  static const Color surface = Color(0xFFFFFFFF);
+
   static Color alpha(Color c, double a) => c.withValues(alpha: a);
   static List<BoxShadow> shadowSm = [
     BoxShadow(
-      color: const Color(0xFF0F172A).withValues(alpha: 0.06),
-      blurRadius: 16,
-      offset: const Offset(0, 4),
+      color: const Color(0xFF142A24).withValues(alpha: 0.05),
+      blurRadius: 2,
+      offset: const Offset(0, 1),
+    ),
+    BoxShadow(
+      color: const Color(0xFF142A24).withValues(alpha: 0.05),
+      blurRadius: 24,
+      offset: const Offset(0, 10),
     ),
   ];
 }
@@ -83,39 +108,41 @@ class TripsRepository {
   final SupabaseClient _client;
   TripsRepository(this._client);
 
-  Future<List<TripData>> fetchTrips() async {
-    // Usa la misma consulta que el Dashboard
-    final activeTrips = await CurrentTripService.instance.fetchAllTrips();
+  Future<List<TripData>> fetchTrips({int page = 0, int pageSize = 15}) async {
+    final activeTrips = await CurrentTripService.instance.fetchAllTrips(
+      page: page,
+      pageSize: pageSize,
+    );
 
-    return activeTrips.map((t) {
-      final km = t.totalDistance;
-      final estadoStr = t.status;
+    return activeTrips.map(_mapTrip).toList();
+  }
 
-      return TripData(
-        id: t.id,
-        code: t.code,
-        origin: t.origin ?? 'Origen',
-        destination: t.destination ?? 'Destino',
-        destinationDetail: t.routeName,
-        packages: t.pendingPackages,
-        progress: t.totalStops > 0
-            ? (t.completedStops / t.totalStops).clamp(0.0, 1.0).toDouble()
-            : null,
-        distance: km != null ? '${km.toStringAsFixed(0)} km' : '--',
-        eta: _formatEta(estadoStr, t.estimatedArrival),
-        vehicle: _buildVehicleText(t.vehiclePlate, t.vehicleBrand, t.vehicleModel),
-        driver: '--',
-        stops: t.totalStops,
-        completedStops: t.completedStops,
-        status: _mapStatus(estadoStr),
-        departureTime: t.departureTime != null
-            ? DateTime.tryParse(t.departureTime!)
-            : null,
-        estimatedArrival: t.estimatedArrival != null
-            ? DateTime.tryParse(t.estimatedArrival!)
-            : null,
-      );
-    }).toList();
+  TripData _mapTrip(ActiveTripData t) {
+    final km = t.totalDistance;
+    final estadoStr = t.status;
+    return TripData(
+      id: t.id,
+      code: t.code,
+      origin: t.origin ?? 'Origen',
+      destination: t.destination ?? 'Destino',
+      destinationDetail: t.routeName,
+      packages: t.pendingPackages,
+      progress: t.totalStops > 0
+          ? (t.completedStops / t.totalStops).clamp(0.0, 1.0).toDouble()
+          : null,
+      distance: km != null ? '${km.toStringAsFixed(0)} km' : '--',
+      eta: _formatEta(estadoStr, t.estimatedArrival),
+      vehicle: _buildVehicleText(t.vehiclePlate, t.vehicleBrand, t.vehicleModel),
+      driver: '--',
+      stops: t.totalStops,
+      completedStops: t.completedStops,
+      status: _mapStatus(estadoStr),
+      departureTime:
+          t.departureTime != null ? DateTime.tryParse(t.departureTime!) : null,
+      estimatedArrival: t.estimatedArrival != null
+          ? DateTime.tryParse(t.estimatedArrival!)
+          : null,
+    );
   }
 
   String _buildVehicleText(String? plate, String? brand, String? model) {
@@ -150,10 +177,72 @@ final tripsRepositoryProvider = Provider<TripsRepository>(
   (ref) => TripsRepository(SupabaseConfig.client),
 );
 
+/// Primera página (compat filtros / pills).
 final tripsListProvider = FutureProvider.autoDispose<List<TripData>>((ref) {
   ref.watch(bootstrapProvider);
-  return ref.watch(tripsRepositoryProvider).fetchTrips();
+  return ref.watch(tripsRepositoryProvider).fetchTrips(page: 0, pageSize: 15);
 });
+
+/// Lista paginada de viajes (scroll infinito).
+class TripsPagedNotifier extends Notifier<PagedListState<TripData>> {
+  @override
+  PagedListState<TripData> build() {
+    ref.watch(bootstrapProvider);
+    Future(() => refresh());
+    return const PagedListState<TripData>();
+  }
+
+  Future<void> refresh() async {
+    state = state.copyWith(
+      isInitialLoading: true,
+      isLoadingMore: false,
+      items: [],
+      nextPage: 0,
+      hasMore: true,
+      clearError: true,
+    );
+    await _load(0, replace: true);
+  }
+
+  Future<void> loadMore() async {
+    if (state.isLoadingMore || state.isInitialLoading || !state.hasMore) return;
+    state = state.copyWith(isLoadingMore: true);
+    await _load(state.nextPage, replace: false);
+  }
+
+  Future<void> _load(int page, {required bool replace}) async {
+    try {
+      const pageSize = 15;
+      final items = await ref
+          .read(tripsRepositoryProvider)
+          .fetchTrips(page: page, pageSize: pageSize);
+      const maxInMemory = 15 * 8;
+      final merged = replace ? items : [...state.items, ...items];
+      final capped = merged.length > maxInMemory
+          ? merged.sublist(merged.length - maxInMemory)
+          : merged;
+      state = state.copyWith(
+        items: capped,
+        nextPage: page + 1,
+        hasMore: items.length >= pageSize,
+        isInitialLoading: false,
+        isLoadingMore: false,
+        clearError: true,
+      );
+    } catch (e) {
+      state = state.copyWith(
+        isInitialLoading: false,
+        isLoadingMore: false,
+        error: e.toString(),
+      );
+    }
+  }
+}
+
+final tripsPagedProvider =
+    NotifierProvider<TripsPagedNotifier, PagedListState<TripData>>(
+  TripsPagedNotifier.new,
+);
 
 // ==================== SCREEN ====================
 
@@ -165,7 +254,7 @@ class TripsScreen extends ConsumerStatefulWidget {
   ConsumerState<TripsScreen> createState() => _TripsScreenState();
 }
 
-class _TripsScreenState extends ConsumerState<TripsScreen> {
+class _TripsScreenState extends ConsumerState<TripsScreen> with PagedScrollMixin {
   _Filter _filter = _Filter.active;
   final _searchCtrl = TextEditingController();
   String _query = '';
@@ -186,21 +275,29 @@ class _TripsScreenState extends ConsumerState<TripsScreen> {
   }
 
   @override
+  void onLoadMoreRequested() {
+    ref.read(tripsPagedProvider.notifier).loadMore();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final tripsAsync = ref.watch(tripsListProvider);
+    final paged = ref.watch(tripsPagedProvider);
+    // Compat pills: AsyncValue sintético desde estado paginado
+    final tripsAsync = paged.isInitialLoading
+        ? const AsyncValue<List<TripData>>.loading()
+        : paged.error != null && paged.items.isEmpty
+            ? AsyncValue<List<TripData>>.error(paged.error!, StackTrace.current)
+            : AsyncValue<List<TripData>>.data(paged.items);
+
+    final filtered = _getFilteredTrips(paged.items);
 
     return Scaffold(
       backgroundColor: _T.bg,
       body: RefreshIndicator.adaptive(
-        onRefresh: () async {
-          try {
-            await ref.refresh(tripsListProvider.future);
-          } catch (_) {
-            // Silencioso: mantiene datos viejos si falla el refresh
-          }
-        },
+        onRefresh: () => ref.read(tripsPagedProvider.notifier).refresh(),
         edgeOffset: 110,
         child: CustomScrollView(
+          controller: pagedScrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
@@ -214,15 +311,16 @@ class _TripsScreenState extends ConsumerState<TripsScreen> {
               title: const Text(
                 'Mis viajes',
                 style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                  color: _T.primary,
-                  letterSpacing: -0.5,
+                  fontWeight: FontWeight.w800,
+                  color: _T.ink,
+                  letterSpacing: -0.4,
                 ),
               ),
               actions: [
                 IconButton(
                   tooltip: 'Actualizar',
-                  onPressed: () => ref.invalidate(tripsListProvider),
+                  onPressed: () =>
+                      ref.read(tripsPagedProvider.notifier).refresh(),
                   icon: const Icon(Icons.refresh_rounded, color: _T.primary),
                 ),
                 const SizedBox(width: 4),
@@ -248,46 +346,51 @@ class _TripsScreenState extends ConsumerState<TripsScreen> {
                 ),
               ),
             ),
-            tripsAsync.when(
-              loading: () => const SliverToBoxAdapter(child: _SkeletonList()),
-              error: (_, __) => SliverFillRemaining(
+            if (paged.isInitialLoading)
+              const SliverToBoxAdapter(child: _SkeletonList())
+            else if (paged.error != null && paged.items.isEmpty)
+              SliverFillRemaining(
                 child: _ErrorView(
-                  onRetry: () => ref.invalidate(tripsListProvider),
+                  onRetry: () =>
+                      ref.read(tripsPagedProvider.notifier).refresh(),
                 ),
-              ),
-              data: (all) {
-                final filtered = _getFilteredTrips(all);
-                if (filtered.isEmpty) {
-                  return SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: _EmptyView(
-                      filter: _filter,
-                      hasQuery: _query.isNotEmpty,
-                    ),
-                  );
-                }
-
-                return SliverPadding(
-                  padding: EdgeInsets.only(
-                    left: 16,
-                    right: 16,
-                    bottom: MediaQuery.of(context).padding.bottom + 120,
-                    top: 4,
-                  ),
-                  sliver: SliverList.separated(
-                    itemCount: filtered.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 12),
-                    itemBuilder: (_, i) => _TripCardPremium(
+              )
+            else if (filtered.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: _EmptyView(
+                  filter: _filter,
+                  hasQuery: _query.isNotEmpty,
+                ),
+              )
+            else
+              SliverPadding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  bottom: MediaQuery.of(context).padding.bottom + 120,
+                  top: 4,
+                ),
+                sliver: SliverList.separated(
+                  itemCount: filtered.length + 1,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (_, i) {
+                    if (i >= filtered.length) {
+                      return buildLoadMoreFooter(
+                        isLoadingMore: paged.isLoadingMore,
+                        hasMore: paged.hasMore,
+                      );
+                    }
+                    return _TripCardPremium(
                       trip: filtered[i],
                       index: i,
                       isActing: _actingTripId == filtered[i].id,
                       onTap: () => context.push('/trips/${filtered[i].id}'),
                       onAction: () => _handleAction(filtered[i]),
-                    ),
-                  ),
-                );
-              },
-            ),
+                    );
+                  },
+                ),
+              ),
           ],
         ),
       ),
@@ -348,7 +451,7 @@ class _TripsScreenState extends ConsumerState<TripsScreen> {
           ),
         );
         if (result.success) {
-          ref.invalidate(tripsListProvider);
+          ref.read(tripsPagedProvider.notifier).refresh();
           if (mounted) context.go('/tracking');
           return;
         }
@@ -371,7 +474,7 @@ class _TripsScreenState extends ConsumerState<TripsScreen> {
           ),
         );
         if (result.success) {
-          ref.invalidate(tripsListProvider);
+          ref.read(tripsPagedProvider.notifier).refresh();
           if (mounted) context.go('/tracking');
           return;
         }
@@ -383,7 +486,7 @@ class _TripsScreenState extends ConsumerState<TripsScreen> {
         );
         if (!mounted) return;
         if (result.success) {
-          ref.invalidate(tripsListProvider);
+          ref.read(tripsPagedProvider.notifier).refresh();
           if (mounted) context.go('/tracking');
           return;
         }
@@ -398,7 +501,7 @@ class _TripsScreenState extends ConsumerState<TripsScreen> {
           ),
         );
       }
-      ref.invalidate(tripsListProvider);
+      ref.read(tripsPagedProvider.notifier).refresh();
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -455,21 +558,19 @@ class _TripCardPremium extends StatelessWidget {
             'Viaje ${trip.code}, ${cfg.label}, de ${trip.origin} a ${trip.destination}',
         child: Container(
           decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(20),
+            color: _T.surface,
+            borderRadius: BorderRadius.circular(12),
             boxShadow: _T.shadowSm,
             border: Border.all(
-              color: isActive
-                  ? _T.alpha(cfg.color, 0.25)
-                  : Colors.black.withValues(alpha: 0.04),
+              color: isActive ? cfg.border : _T.line,
             ),
           ),
           child: Material(
             color: Colors.transparent,
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(12),
             child: InkWell(
               onTap: onTap,
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(12),
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Column(
@@ -498,9 +599,9 @@ class _TripCardPremium extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
-              color: _T.alpha(cfg.color, 0.08),
-              borderRadius: BorderRadius.circular(50),
-              border: Border.all(color: _T.alpha(cfg.color, 0.15)),
+              color: cfg.bg,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: cfg.border),
             ),
             child: Text(
               trip.code,
@@ -508,19 +609,24 @@ class _TripCardPremium extends StatelessWidget {
                 fontSize: 11,
                 fontWeight: FontWeight.w800,
                 color: cfg.color,
-                letterSpacing: 0.3,
+                letterSpacing: 0.2,
               ),
             ),
           ),
           const Spacer(),
-          _DotStatus(color: cfg.color, label: cfg.label),
+          _DotStatus(
+            color: cfg.color,
+            bg: cfg.bg,
+            border: cfg.border,
+            label: cfg.label,
+          ),
           const SizedBox(width: 8),
           Text(
             trip.eta,
             style: const TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w700,
-              color: _T.primary,
+              color: _T.ink,
             ),
           ),
         ],
@@ -535,12 +641,12 @@ class _TripCardPremium extends StatelessWidget {
                 width: 10,
                 height: 10,
                 decoration: BoxDecoration(
-                  color: _T.success,
+                  color: _T.primary,
                   shape: BoxShape.circle,
                   border: Border.all(color: Colors.white, width: 2),
                   boxShadow: [
                     BoxShadow(
-                      color: _T.alpha(_T.success, 0.3),
+                      color: _T.alpha(_T.primary, 0.3),
                       blurRadius: 6,
                     ),
                   ],
@@ -587,7 +693,7 @@ class _TripCardPremium extends StatelessWidget {
                   style: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
-                    color: _T.primary,
+                    color: _T.ink,
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -607,7 +713,7 @@ class _TripCardPremium extends StatelessWidget {
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w800,
-                    color: _T.primary,
+                    color: _T.ink,
                     letterSpacing: -0.2,
                   ),
                 ),
@@ -649,7 +755,7 @@ class _TripCardPremium extends StatelessWidget {
           child: LinearProgressIndicator(
             value: trip.progress,
             minHeight: 5,
-            backgroundColor: _T.neutralBg,
+            backgroundColor: _T.accentSoft,
             valueColor: AlwaysStoppedAnimation(c),
           ),
         ),
@@ -737,38 +843,72 @@ class _TripCardPremium extends StatelessWidget {
 
   Color _actionColor(TripStatus s) => switch (s) {
     TripStatus.paused => _T.warning,
+    TripStatus.scheduled => _T.primary,
+    TripStatus.inProgress => _T.primary,
     _ => _T.primary,
   };
 }
 
-// ==================== STATUS CONFIG ====================
+// ==================== STATUS CONFIG (badges web) ====================
 
 class _StatusCfg {
   final String label;
   final Color color;
-  const _StatusCfg(this.label, this.color);
+  final Color bg;
+  final Color border;
+  const _StatusCfg(this.label, this.color, this.bg, this.border);
 }
 
+/// Colores de badge como en la web:
+/// en_curso/completado → badge-green, programado → badge-blue, pausado → badge-gold
 _StatusCfg _statusConfig(TripStatus s) => switch (s) {
-  TripStatus.inProgress => const _StatusCfg('En curso', _T.accent),
-  TripStatus.paused => const _StatusCfg('Pausado', _T.warning),
-  TripStatus.completed => const _StatusCfg('Completado', _T.success),
-  TripStatus.scheduled => const _StatusCfg('Programado', _T.neutral),
+  TripStatus.inProgress => const _StatusCfg(
+    'En curso',
+    _T.success,
+    _T.successBg,
+    _T.successBorder,
+  ),
+  TripStatus.paused => const _StatusCfg(
+    'Pausado',
+    _T.warning,
+    _T.warningBg,
+    _T.warningBorder,
+  ),
+  TripStatus.completed => const _StatusCfg(
+    'Completado',
+    _T.success,
+    _T.successBg,
+    _T.successBorder,
+  ),
+  TripStatus.scheduled => const _StatusCfg(
+    'Programado',
+    _T.info,
+    _T.infoBg,
+    _T.infoBorder,
+  ),
 };
 
 // ==================== WIDGETS ====================
 
 class _DotStatus extends StatelessWidget {
   final Color color;
+  final Color bg;
+  final Color border;
   final String label;
-  const _DotStatus({required this.color, required this.label});
+  const _DotStatus({
+    required this.color,
+    required this.bg,
+    required this.border,
+    required this.label,
+  });
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: _T.alpha(color, 0.08),
-        borderRadius: BorderRadius.circular(50),
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: border),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -782,7 +922,7 @@ class _DotStatus extends StatelessWidget {
           Text(
             label,
             style: TextStyle(
-              fontSize: 11,
+              fontSize: 10,
               fontWeight: FontWeight.w700,
               color: color,
             ),
@@ -822,7 +962,7 @@ class _MiniStat extends StatelessWidget {
                     style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
-                      color: _T.primary,
+                      color: _T.ink,
                     ),
                   ),
                 ),
@@ -872,22 +1012,22 @@ class _SearchField extends StatelessWidget {
                 onPressed: onClear,
               ),
         filled: true,
-        fillColor: Colors.white,
+        fillColor: _T.surface,
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 14,
           vertical: 12,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.06)),
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: _T.line),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.06)),
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: _T.lineStrong),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: _T.accent),
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: _T.primary, width: 1.5),
         ),
       ),
     );
@@ -963,19 +1103,17 @@ class _Pill extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: Material(
-        color: selected ? _T.primary : Colors.white,
-        borderRadius: BorderRadius.circular(50),
+        color: selected ? _T.primary : _T.surface,
+        borderRadius: BorderRadius.circular(8),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(50),
+          borderRadius: BorderRadius.circular(8),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(50),
+              borderRadius: BorderRadius.circular(8),
               border: Border.all(
-                color: selected
-                    ? Colors.transparent
-                    : Colors.black.withValues(alpha: 0.08),
+                color: selected ? _T.primary : _T.lineStrong,
               ),
             ),
             child: Row(
@@ -984,9 +1122,9 @@ class _Pill extends StatelessWidget {
                 Text(
                   label,
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: selected ? Colors.white : _T.neutral,
+                    color: selected ? Colors.white : _T.ink,
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -998,7 +1136,7 @@ class _Pill extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: selected
                         ? Colors.white.withValues(alpha: 0.2)
-                        : _T.neutralBg,
+                        : _T.accentSoft,
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
@@ -1006,7 +1144,7 @@ class _Pill extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w800,
-                      color: selected ? Colors.white : _T.neutral,
+                      color: selected ? Colors.white : _T.primary,
                     ),
                   ),
                 ),
@@ -1153,11 +1291,11 @@ class _EmptyView extends StatelessWidget {
               width: 72,
               height: 72,
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: _T.accentSoft,
                 shape: BoxShape.circle,
-                boxShadow: _T.shadowSm,
+                border: Border.all(color: _T.line),
               ),
-              child: Icon(icon, color: _T.neutral, size: 32),
+              child: Icon(icon, color: _T.primary, size: 32),
             ),
             const SizedBox(height: 16),
             Text(
@@ -1165,7 +1303,7 @@ class _EmptyView extends StatelessWidget {
               style: const TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w800,
-                color: _T.primary,
+                color: _T.ink,
               ),
             ),
             const SizedBox(height: 6),
@@ -1205,7 +1343,7 @@ class _ErrorView extends StatelessWidget {
               style: TextStyle(
                 fontWeight: FontWeight.w800,
                 fontSize: 16,
-                color: _T.primary,
+                color: _T.ink,
               ),
             ),
             const SizedBox(height: 8),

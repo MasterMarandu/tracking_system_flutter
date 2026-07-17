@@ -5,6 +5,7 @@ import 'package:tracking_system_app/core/router/app_router.dart';
 import 'package:tracking_system_app/core/theme/app_theme.dart';
 import 'package:tracking_system_app/core/services/connectivity_service.dart';
 import 'package:tracking_system_app/core/services/notification_service.dart';
+import 'package:tracking_system_app/features/settings/domain/settings_provider.dart';
 
 void main() async {
   await AppConfig.initialize();
@@ -25,13 +26,14 @@ class TrackingSystemApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(appRouterProvider);
+    final themeMode = ref.watch(themeModeProvider);
     
     return MaterialApp.router(
-      title: 'Tracking System',
+      title: 'Routio',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
-      themeMode: ThemeMode.system,
+      themeMode: themeMode,
       routerConfig: router,
     );
   }

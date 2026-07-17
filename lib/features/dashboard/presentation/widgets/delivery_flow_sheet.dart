@@ -6,6 +6,8 @@ import 'package:tracking_system_app/features/dashboard/domain/models.dart';
 import 'package:tracking_system_app/features/dashboard/presentation/widgets/common_widgets.dart';
 import 'package:tracking_system_app/features/dashboard/presentation/widgets/signature_painter.dart';
 import 'package:tracking_system_app/features/dashboard/providers/delivery_flow_provider.dart';
+import 'package:tracking_system_app/features/packages/data/package_service.dart';
+import 'package:tracking_system_app/features/packages/domain/package.dart';
 
 Future<void> showDeliverySheet(
   BuildContext context, {
@@ -58,8 +60,39 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
   bool _otpVerifying = false;
   int _otpAttempts = 0;
 
-  List<String> get _packageIds =>
-      List.generate(widget.tripData.packages, (i) => 'TRK-2026-${7000 + i}');
+  /// UUIDs reales de shipping_paquetes (nunca tracking inventado).
+  List<Package> _packages = const [];
+  bool _loadingPackages = true;
+
+  List<String> get _packageIds => _packages.map((p) => p.id).toList();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRealPackages();
+  }
+
+  Future<void> _loadRealPackages() async {
+    try {
+      final ids = await PackageService.instance
+          .fetchPackageIdsForTrip(widget.tripId);
+      final pkgs = ids.isEmpty
+          ? <Package>[]
+          : await PackageService.instance.fetchPackagesByIdsWithEstado(ids);
+      if (!mounted) return;
+      setState(() {
+        _packages = pkgs;
+        _loadingPackages = false;
+      });
+      // Pre-marcar todos como escaneados si hay pocos (flujo real)
+      for (final p in pkgs) {
+        ref.read(deliveryFlowProvider.notifier).togglePackageScan(p.id);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingPackages = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -207,7 +240,7 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
                         style: const TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
-                            color: Color(0xFF1565C0))),
+                            color: Color(0xFF206B5C))),
                   ],
                 ),
               ),
@@ -239,8 +272,8 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
 
   Widget _buildScanStep(ThemeData theme) {
     final deliveryState = ref.watch(deliveryFlowProvider);
-    final allScanned =
-        deliveryState.scannedPackageIds.length >= _packageIds.length;
+    final allScanned = _packageIds.isEmpty
+        || deliveryState.scannedPackageIds.length >= _packageIds.length;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -248,8 +281,27 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
       children: [
         _buildDeliveryProgress(1, theme),
         const SizedBox(height: 20),
-        Container(
-          height: 180,
+        if (_loadingPackages)
+          const Padding(
+            padding: EdgeInsets.all(24),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (_packages.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Text(
+              'No hay paquetes en el inventario para marcar. '
+              'Al finalizar se actualizarán los paquetes libres de la empresa.',
+              style: TextStyle(fontSize: 13),
+            ),
+          )
+        else
+          Container(
+          height: 120,
           decoration: BoxDecoration(
             color: Colors.black,
             borderRadius: BorderRadius.circular(16),
@@ -259,23 +311,23 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.qr_code_scanner, size: 64, color: Colors.white70),
+                Icon(Icons.qr_code_scanner, size: 48, color: Colors.white70),
                 SizedBox(height: 8),
-                Text('Escanea el código de barras',
+                Text('Confirma los paquetes a entregar',
                     style: TextStyle(color: Colors.white70)),
               ],
             ),
           ),
         ),
         const SizedBox(height: 12),
-        ..._packageIds.map(
-          (id) => CheckboxListTile(
-            value: deliveryState.scannedPackageIds.contains(id),
+        ..._packages.map(
+          (pkg) => CheckboxListTile(
+            value: deliveryState.scannedPackageIds.contains(pkg.id),
             onChanged: (selected) {
-              ref.read(deliveryFlowProvider.notifier).togglePackageScan(id);
+              ref.read(deliveryFlowProvider.notifier).togglePackageScan(pkg.id);
             },
-            title: Text(id),
-            subtitle: const Text('Paquete estándar'),
+            title: Text(pkg.trackingNumber),
+            subtitle: Text(pkg.status.label),
             controlAffinity: ListTileControlAffinity.trailing,
             activeColor: Colors.green,
             dense: true,
@@ -481,7 +533,7 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
       children: [
         _buildDeliveryProgress(4, theme),
         const SizedBox(height: 20),
-        const Icon(Icons.pin, size: 48, color: Color(0xFF1565C0)),
+        const Icon(Icons.pin, size: 48, color: Color(0xFF206B5C)),
         const SizedBox(height: 12),
         const Text('Código de verificación',
             textAlign: TextAlign.center,
@@ -766,11 +818,18 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
     );
 
     if (confirmed == true && mounted) {
+      final deliveryState = ref.read(deliveryFlowProvider);
+      // Preferir IDs escaneados; si vacío, todos los del listado real (UUIDs)
+      final ids = deliveryState.scannedPackageIds.isNotEmpty
+          ? deliveryState.scannedPackageIds.toList()
+          : _packageIds;
+
       await ref.read(deliveryFlowProvider.notifier).completeDelivery(
             tripId: widget.tripId,
             stopId: widget.stopId,
             checkpointId: widget.checkpointId,
-            packagesDelivered: widget.tripData.packages,
+            packagesDelivered: ids.isNotEmpty ? ids.length : 1,
+            packageIds: ids,
           );
 
       if (!mounted) return;
