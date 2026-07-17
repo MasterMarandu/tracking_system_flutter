@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:tracking_system_app/core/config/supabase_config.dart';
 import 'package:tracking_system_app/core/services/gps_service.dart';
 import 'package:tracking_system_app/core/services/location_service.dart';
+import 'package:tracking_system_app/features/sync/data/local_cache.dart';
 
 /// Resultado de la operación de navegación
 class NavigationResult {
@@ -121,10 +122,13 @@ class NavigationService {
   }
 
   /// Obtiene el contexto necesario para iniciar tracking de un viaje.
+  /// Offline: usa snapshot guardado al navegar la última vez.
   Future<_TripContext?> _getTripContext(String tripId) async {
     try {
       final user = _client.auth.currentUser;
-      if (user == null) return null;
+      if (user == null) {
+        return _contextFromCache(tripId);
+      }
 
       final coreUser = await _client
           .from('core_usuarios')
@@ -132,7 +136,9 @@ class NavigationService {
           .eq('auth_user_id', user.id)
           .filter('deleted_at', 'is', null)
           .maybeSingle();
-      if (coreUser == null) return null;
+      if (coreUser == null) {
+        return _contextFromCache(tripId);
+      }
 
       final results = await Future.wait([
         _client
@@ -151,16 +157,47 @@ class NavigationService {
 
       final conductor = results[0] as Map<String, dynamic>?;
       final vehiculo = results[1] as Map<String, dynamic>?;
-      if (conductor == null || vehiculo == null) return null;
+      if (conductor == null || vehiculo == null) {
+        return _contextFromCache(tripId);
+      }
 
-      return _TripContext(
+      final ctx = _TripContext(
         tripId: tripId,
         empresaId: coreUser['empresa_id'] as String,
         conductorId: conductor['id'] as String,
         vehiculoId: vehiculo['vehiculo_id'] as String,
       );
+
+      // Guardar para offline
+      try {
+        final cache = await LocalCache.create();
+        await cache.saveTripContext(CachedTripContext(
+          tripId: ctx.tripId,
+          empresaId: ctx.empresaId,
+          conductorId: ctx.conductorId,
+          vehiculoId: ctx.vehiculoId,
+        ));
+      } catch (_) {}
+
+      return ctx;
     } catch (e) {
       debugPrint('NavigationService._getTripContext error: $e');
+      return _contextFromCache(tripId);
+    }
+  }
+
+  Future<_TripContext?> _contextFromCache(String tripId) async {
+    try {
+      final cache = await LocalCache.create();
+      final c = await cache.loadTripContext(tripId: tripId);
+      if (c == null) return null;
+      return _TripContext(
+        tripId: c.tripId,
+        empresaId: c.empresaId,
+        conductorId: c.conductorId,
+        vehiculoId: c.vehiculoId,
+      );
+    } catch (_) {
       return null;
     }
   }

@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uuid/uuid.dart';
 
 import 'package:tracking_system_app/core/config/supabase_config.dart';
 import 'package:tracking_system_app/core/services/gps_service.dart';
 import 'package:tracking_system_app/core/services/log_service.dart';
+import 'package:tracking_system_app/features/sync/data/local_cache.dart';
 
-/// Servicio que envía la posición GPS del vehículo a Supabase
+/// Servicio que envía la posición GPS del vehículo a Supabase.
+/// Sin red: acumula en buffer local y flushea al reconectar.
 class LocationService {
   static LocationService? _instance;
   static LocationService get instance => _instance ??= LocationService._();
@@ -15,6 +18,7 @@ class LocationService {
 
   final SupabaseClient _client = SupabaseConfig.client;
   final GpsService _gps = GpsService.instance;
+  final _uuid = const Uuid();
 
   StreamSubscription<Position>? _gpsSubscription;
   Timer? _sendTimer;
@@ -25,6 +29,8 @@ class LocationService {
   String? _activeVehicleId;
   String? _activeConductorId;
   String? _activeEmpresaId;
+
+  bool _flushing = false;
 
   /// Inicia el envío de posición GPS para un viaje
   Future<void> startTracking({
@@ -44,35 +50,37 @@ class LocationService {
     _activeEmpresaId = empresaId;
     _isActive = true;
 
+    // Persistir contexto para reanudar offline
+    try {
+      final cache = await LocalCache.create();
+      await cache.saveTripContext(CachedTripContext(
+        tripId: tripId,
+        empresaId: empresaId,
+        conductorId: conductorId,
+        vehiculoId: vehicleId,
+      ));
+    } catch (e) {
+      LogService.instance.info('No se pudo guardar trip context: $e');
+    }
+
     LogService.instance.info('═══════════════════════════════════════');
     LogService.instance.info('📍 LocationService iniciado');
     LogService.instance.info('   trip: $tripId');
     LogService.instance.info('   vehicle: $vehicleId');
-    LogService.instance.info('   conductor: $conductorId');
-    LogService.instance.info('   empresa: $empresaId');
     LogService.instance.info('═══════════════════════════════════════');
 
-    // Verificar permisos
     final hasPermission = await _gps.checkPermissions();
     if (!hasPermission) {
       LogService.instance.error('❌ Sin permisos de GPS');
-      // Continuar igual con posición por defecto (para emuladores)
     }
 
-    // Intentar obtener posición real
     Position? initialPos;
     try {
       initialPos = await _gps.getCurrentPosition();
-      if (initialPos != null) {
-        LogService.instance.info('📍 Posición inicial: ${initialPos.latitude}, ${initialPos.longitude}');
-      } else {
-        LogService.instance.info('⚠️ No se pudo obtener posición GPS (usando fallback)');
-      }
     } catch (e) {
       LogService.instance.info('⚠️ Error al obtener posición GPS: $e');
     }
 
-    // Si no hay posición real, usar Asunción como fallback (para emuladores)
     if (initialPos == null) {
       initialPos = Position(
         latitude: -25.2637,
@@ -86,21 +94,17 @@ class LocationService {
         speed: 0.0,
         speedAccuracy: 0.0,
       );
-      LogService.instance.info('📍 Usando posición fallback: Asunción, Paraguay');
+      LogService.instance.info('📍 Usando posición fallback: Asunción');
     }
 
-    // Enviar posición inicial
     await _sendPosition(initialPos);
+    // Intentar vaciar buffer previo al arrancar
+    unawaited(flushGpsBuffer());
 
-    // Intentar iniciar el stream GPS (puede fallar en emuladores)
     try {
       await _gps.startTracking();
-      LogService.instance.info('📍 GPS tracking iniciado (stream activo)');
-
-      // Escuchar cambios de posición
       _gpsSubscription = _gps.positionStream.listen(
         (position) {
-          LogService.instance.info('📍 Nueva posición: ${position.latitude}, ${position.longitude}');
           _sendPosition(position);
         },
         onError: (error) {
@@ -108,10 +112,9 @@ class LocationService {
         },
       );
     } catch (e) {
-      LogService.instance.info('⚠️ No se pudo iniciar stream GPS: $e (usando timer solamente)');
+      LogService.instance.info('⚠️ Stream GPS no disponible: $e');
     }
 
-    // Timer de respaldo: enviar posición cada 10 segundos (incluso sin stream)
     _sendTimer = Timer.periodic(
       const Duration(seconds: 10),
       (_) async {
@@ -126,7 +129,6 @@ class LocationService {
     LogService.instance.info('✅ LocationService completamente activo');
   }
 
-  /// Detiene el envío de posición GPS
   Future<void> stopTracking() async {
     if (!_isActive) return;
 
@@ -147,82 +149,227 @@ class LocationService {
     await _gps.stopTracking();
   }
 
-  /// Envía la posición actual a Supabase
+  /// Envía posición; si falla, encola en buffer local.
   Future<void> _sendPosition(Position position) async {
     if (!_isActive) return;
-    if (_activeTripId == null || _activeVehicleId == null) return;
-    if (_activeConductorId == null || _activeEmpresaId == null) return;
+    if (_activeTripId == null ||
+        _activeVehicleId == null ||
+        _activeConductorId == null ||
+        _activeEmpresaId == null) {
+      return;
+    }
+
+    final dataGps = _buildGpsRow(
+      empresaId: _activeEmpresaId!,
+      viajeId: _activeTripId!,
+      vehiculoId: _activeVehicleId!,
+      conductorId: _activeConductorId!,
+      position: position,
+      online: true,
+      recordedAt: DateTime.now().toUtc(),
+    );
+
+    final dataUltima = _buildUltimaRow(
+      empresaId: _activeEmpresaId!,
+      viajeId: _activeTripId!,
+      vehiculoId: _activeVehicleId!,
+      conductorId: _activeConductorId!,
+      position: position,
+      online: true,
+    );
 
     try {
-      // Construir WKT para PostGIS: POINT(longitud latitud)
-      final ubicacionWkt = 'POINT(${position.longitude} ${position.latitude})';
-
-      // Datos completos para tracking_gps (tabla histórica)
-      final dataGps = {
-        'empresa_id': _activeEmpresaId,
-        'viaje_id': _activeTripId,
-        'vehiculo_id': _activeVehicleId,
-        'conductor_id': _activeConductorId,
-        'latitud': position.latitude,
-        'longitud': position.longitude,
-        'ubicacion': ubicacionWkt,
-        'precision_m': position.accuracy,
-        'altitud': position.altitude,
-        'velocidad_kmh': position.speed * 3.6, // m/s a km/h
-        'rumbo': position.heading,
-        'bateria': 100, // TODO: obtener del device
-        'internet': true,
-        'gps': true,
-        'satelites': 0, // TODO: obtener del GPS
-      };
-
-      // Siempre UTC con sufijo Z. DateTime.now().toIso8601String() manda hora
-      // local sin offset y Postgres la interpreta como UTC → "en línea" falla en web
-      // (umbral 120s sobre tracking_ultima_posicion.updated_at).
-      final nowUtc = DateTime.now().toUtc().toIso8601String();
-
-      // Cache materializada (PK vehiculo_id). El trigger
-      // trg_update_ultima_posicion también actualiza tras INSERT en tracking_gps;
-      // este upsert es respaldo si el trigger no está desplegado.
-      final dataUltima = {
-        'vehiculo_id': _activeVehicleId,
-        'empresa_id': _activeEmpresaId,
-        'viaje_id': _activeTripId,
-        'conductor_id': _activeConductorId,
-        'latitud': position.latitude,
-        'longitud': position.longitude,
-        'ubicacion': ubicacionWkt,
-        'precision_m': position.accuracy,
-        'velocidad_kmh': position.speed * 3.6,
-        'rumbo': position.heading,
-        'bateria': 100,
-        'internet': true,
-        'gps': true,
-        'satelites': 0,
-        'created_at': nowUtc,
-        'updated_at': nowUtc,
-      };
-
-      LogService.instance.info('📤 Enviando GPS a Supabase...');
-
-      // 1. Insertar en tracking_gps (histórico - tiene todas las columnas)
       await _client.from('tracking_gps').insert(dataGps);
-      LogService.instance.info('✅ GPS insertado en tracking_gps');
-
-      // 2. Upsert en tracking_ultima_posicion (cache para mapa en vivo / online)
       await _client.from('tracking_ultima_posicion').upsert(
-        dataUltima,
-        onConflict: 'vehiculo_id',
-      );
-      LogService.instance.info('✅ Última posición actualizada');
-
+            dataUltima,
+            onConflict: 'vehiculo_id',
+          );
       LogService.instance.debug(
-        'GPS enviado: ${position.latitude}, ${position.longitude} @ $nowUtc',
+        'GPS enviado: ${position.latitude}, ${position.longitude}',
       );
-    } catch (e, st) {
-      LogService.instance.error('❌ Error al enviar GPS', e);
-      LogService.instance.error('Stack', st);
+      // Tras un envío OK, intentar flush del buffer
+      unawaited(flushGpsBuffer());
+    } catch (e) {
+      LogService.instance.info('GPS offline/error → buffer local: $e');
+      await _bufferPoint(position);
     }
+  }
+
+  Future<void> _bufferPoint(Position position) async {
+    if (_activeTripId == null ||
+        _activeVehicleId == null ||
+        _activeConductorId == null ||
+        _activeEmpresaId == null) {
+      return;
+    }
+    try {
+      final cache = await LocalCache.create();
+      await cache.enqueueGpsPoint(
+        BufferedGpsPoint(
+          id: _uuid.v4(),
+          empresaId: _activeEmpresaId!,
+          viajeId: _activeTripId!,
+          vehiculoId: _activeVehicleId!,
+          conductorId: _activeConductorId!,
+          lat: position.latitude,
+          lng: position.longitude,
+          accuracy: position.accuracy,
+          altitude: position.altitude,
+          speedMps: position.speed,
+          heading: position.heading,
+          recordedAt: DateTime.now().toUtc(),
+        ),
+      );
+      final n = await cache.gpsBufferCount();
+      LogService.instance.info('📦 GPS buffer: $n puntos pendientes');
+    } catch (e) {
+      LogService.instance.error('No se pudo bufferizar GPS', e);
+    }
+  }
+
+  /// Sube puntos del buffer local a Supabase (FIFO, tope por lote).
+  Future<int> flushGpsBuffer({int batchSize = 40}) async {
+    if (_flushing) return 0;
+    _flushing = true;
+    var flushed = 0;
+    try {
+      final cache = await LocalCache.create();
+      final pending = await cache.loadGpsBuffer();
+      if (pending.isEmpty) return 0;
+
+      LogService.instance.info('🔄 Flush GPS buffer: ${pending.length} puntos');
+
+      final remaining = <BufferedGpsPoint>[];
+      for (var i = 0; i < pending.length; i++) {
+        final point = pending[i];
+        try {
+          await _client
+              .from('tracking_gps')
+              .insert(point.toTrackingGpsInsert());
+
+          // Actualizar última posición solo con el más reciente del lote
+          if (i == pending.length - 1 ||
+              (i + 1) % batchSize == 0) {
+            final nowUtc = DateTime.now().toUtc().toIso8601String();
+            final ubicacionWkt = 'POINT(${point.lng} ${point.lat})';
+            await _client.from('tracking_ultima_posicion').upsert(
+              {
+                'vehiculo_id': point.vehiculoId,
+                'empresa_id': point.empresaId,
+                'viaje_id': point.viajeId,
+                'conductor_id': point.conductorId,
+                'latitud': point.lat,
+                'longitud': point.lng,
+                'ubicacion': ubicacionWkt,
+                'precision_m': point.accuracy,
+                'velocidad_kmh': (point.speedMps ?? 0) * 3.6,
+                'rumbo': point.heading,
+                'bateria': 100,
+                'internet': true,
+                'gps': true,
+                'satelites': 0,
+                'created_at': point.recordedAt.toUtc().toIso8601String(),
+                'updated_at': nowUtc,
+              },
+              onConflict: 'vehiculo_id',
+            );
+          }
+          flushed++;
+        } catch (e) {
+          // Dejar este y los siguientes para otro intento
+          remaining.addAll(pending.sublist(i));
+          LogService.instance.info(
+            'Flush GPS detenido en $i/$flushed enviados: $e',
+          );
+          break;
+        }
+      }
+
+      if (remaining.isEmpty) {
+        await cache.clearGpsBuffer();
+      } else {
+        await cache.replaceGpsBuffer(remaining);
+      }
+
+      LogService.instance.info('✅ GPS flush: $flushed enviados');
+      return flushed;
+    } catch (e) {
+      LogService.instance.error('flushGpsBuffer error', e);
+      return flushed;
+    } finally {
+      _flushing = false;
+    }
+  }
+
+  Future<int> pendingGpsCount() async {
+    try {
+      final cache = await LocalCache.create();
+      return cache.gpsBufferCount();
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Map<String, dynamic> _buildGpsRow({
+    required String empresaId,
+    required String viajeId,
+    required String vehiculoId,
+    required String conductorId,
+    required Position position,
+    required bool online,
+    required DateTime recordedAt,
+  }) {
+    final ubicacionWkt =
+        'POINT(${position.longitude} ${position.latitude})';
+    return {
+      'empresa_id': empresaId,
+      'viaje_id': viajeId,
+      'vehiculo_id': vehiculoId,
+      'conductor_id': conductorId,
+      'latitud': position.latitude,
+      'longitud': position.longitude,
+      'ubicacion': ubicacionWkt,
+      'precision_m': position.accuracy,
+      'altitud': position.altitude,
+      'velocidad_kmh': position.speed * 3.6,
+      'rumbo': position.heading,
+      'bateria': 100,
+      'internet': online,
+      'gps': true,
+      'satelites': 0,
+      'created_at': recordedAt.toIso8601String(),
+    };
+  }
+
+  Map<String, dynamic> _buildUltimaRow({
+    required String empresaId,
+    required String viajeId,
+    required String vehiculoId,
+    required String conductorId,
+    required Position position,
+    required bool online,
+  }) {
+    final nowUtc = DateTime.now().toUtc().toIso8601String();
+    final ubicacionWkt =
+        'POINT(${position.longitude} ${position.latitude})';
+    return {
+      'vehiculo_id': vehiculoId,
+      'empresa_id': empresaId,
+      'viaje_id': viajeId,
+      'conductor_id': conductorId,
+      'latitud': position.latitude,
+      'longitud': position.longitude,
+      'ubicacion': ubicacionWkt,
+      'precision_m': position.accuracy,
+      'velocidad_kmh': position.speed * 3.6,
+      'rumbo': position.heading,
+      'bateria': 100,
+      'internet': online,
+      'gps': true,
+      'satelites': 0,
+      'created_at': nowUtc,
+      'updated_at': nowUtc,
+    };
   }
 
   void dispose() {

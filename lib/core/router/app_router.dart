@@ -243,7 +243,7 @@ class _MoreScreen extends StatelessWidget {
           _buildMenuItem(
             context,
             icon: Icons.sync_outlined,
-            title: 'Sync Center',
+            title: 'Sincronización',
             onTap: () => context.push('/sync'),
           ),
           _buildMenuItem(

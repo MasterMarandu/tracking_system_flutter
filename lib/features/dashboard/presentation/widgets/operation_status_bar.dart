@@ -26,19 +26,26 @@ class OperationStatusBar extends StatelessWidget {
         if (!status.internet)
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 6),
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
             color: Colors.red.withValues(alpha: 0.85),
-            child: const Row(
+            child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.cloud_off, color: Colors.white, size: 16),
-                SizedBox(width: 8),
-                Text(
-                    'MODO OFFLINE - Los datos se sincronizarán al reconectar',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600)),
+                const Icon(Icons.cloud_off, color: Colors.white, size: 16),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    pendingSyncCount > 0
+                        ? 'SIN SEÑAL · Viaje en dispositivo · $pendingSyncCount pendiente${pendingSyncCount == 1 ? '' : 's'}'
+                        : 'SIN SEÑAL · Usando viaje y paquetes en dispositivo',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
               ],
             ),
           )

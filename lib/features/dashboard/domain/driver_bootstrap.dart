@@ -128,8 +128,8 @@ class BootstrapUser {
       id: (json['id'] ?? json['auth_user_id']) as String,
       name: (json['name'] ?? '') as String,
       email: json['email'] as String?,
-      phone: json['telefono'] as String?,
-      role: json['rol'] as String? ?? 'Chofer',
+      phone: (json['phone'] ?? json['telefono']) as String?,
+      role: (json['role'] ?? json['rol'] ?? 'Chofer') as String,
       companyId: (json['companyId'] ?? json['empresa_id'] ?? '') as String,
       active: json['active'] as bool? ?? true,
     );
@@ -158,9 +158,9 @@ class BootstrapDriver {
       id: json['id'] as String,
       status: (json['status'] ?? json['estado'] ?? 'desconocido') as String,
       license: (json['license'] ?? json['licencia'] ?? '') as String,
-      phone: (json['telefono']) as String?,
-      photoUrl: json['foto'] as String?,
-      vehicleId: json['vehicleId'] as String?,
+      phone: (json['phone'] ?? json['telefono']) as String?,
+      photoUrl: (json['photoUrl'] ?? json['foto']) as String?,
+      vehicleId: (json['vehicleId'] ?? json['vehiculo_actual']) as String?,
     );
   }
 }
@@ -368,20 +368,41 @@ class BootstrapPackage {
   final String id;
   final String trackingNumber;
   final String status;
+  final String? recipientName;
+  final String? priority;
+  final String? weight;
 
   const BootstrapPackage({
     required this.id,
     required this.trackingNumber,
     required this.status,
+    this.recipientName,
+    this.priority,
+    this.weight,
   });
 
   factory BootstrapPackage.fromJson(Map<String, dynamic> json) {
     return BootstrapPackage(
       id: json['id'] as String,
-      trackingNumber: json['trackingNumber'] as String,
-      status: json['status'] as String,
+      trackingNumber: (json['trackingNumber'] ??
+              json['tracking_number'] ??
+              '') as String,
+      status: (json['status'] ?? json['estado'] ?? 'pendiente') as String,
+      recipientName:
+          (json['recipientName'] ?? json['recipient_name']) as String?,
+      priority: json['priority'] as String?,
+      weight: json['weight'] as String?,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'trackingNumber': trackingNumber,
+        'status': status,
+        'recipientName': recipientName,
+        'priority': priority,
+        'weight': weight,
+      };
 }
 
 class BootstrapDeliverySession {

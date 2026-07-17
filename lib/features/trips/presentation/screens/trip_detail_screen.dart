@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:tracking_system_app/core/config/supabase_config.dart';
+import 'package:tracking_system_app/features/packages/domain/package.dart';
+import 'package:tracking_system_app/features/sync/data/local_cache.dart';
 
 // ==================== MODELS ====================
 
@@ -34,6 +36,19 @@ class TripStop {
     this.etaMinutes,
     this.packages = 0,
   });
+
+  String get statusDbCode {
+    switch (status) {
+      case StopStatus.completed:
+        return 'completado';
+      case StopStatus.llego:
+        return 'llego';
+      case StopStatus.inProgress:
+        return 'en_proceso';
+      case StopStatus.pending:
+        return 'pendiente';
+    }
+  }
 }
 
 class TripDetail {
@@ -91,6 +106,16 @@ class TripDetailRepository {
   TripDetailRepository(this._client);
 
   Future<TripDetail> fetchTripDetail(String tripId) async {
+    try {
+      return await _fetchTripDetailOnline(tripId);
+    } catch (e) {
+      final offline = await _loadTripDetailOffline(tripId);
+      if (offline != null) return offline;
+      rethrow;
+    }
+  }
+
+  Future<TripDetail> _fetchTripDetailOnline(String tripId) async {
     final viajeResult = await _client
         .from('operations_viajes')
         .select('''
@@ -154,7 +179,62 @@ class TripDetailRepository {
       );
     }
 
+    // Fallback visitas si no hay checkpoints
+    if (stopsList.isEmpty) {
+      try {
+        final visits = await _client
+            .from('operations_viaje_visitas')
+            .select(
+              'id, estado, parada_id, nombre, direccion, latitud, longitud, orden, duracion_estimada_min',
+            )
+            .eq('viaje_id', tripId)
+            .filter('deleted_at', 'is', null)
+            .order('orden');
+        for (final v in visits as List) {
+          final map = Map<String, dynamic>.from(v as Map);
+          stopsList.add(
+            TripStop(
+              id: (map['parada_id'] as String?) ?? map['id'] as String,
+              checkpointId: map['id'] as String,
+              name: map['nombre'] as String? ?? 'Sin nombre',
+              address: map['direccion'] as String?,
+              lat: (map['latitud'] as num?)?.toDouble(),
+              lng: (map['longitud'] as num?)?.toDouble(),
+              status: _mapStopStatus(map['estado'] as String? ?? 'pendiente'),
+              order: (map['orden'] as num?)?.toInt() ?? stopsList.length + 1,
+              etaMinutes: map['duracion_estimada_min'] as int?,
+            ),
+          );
+        }
+        stopsList.sort((a, b) => a.order.compareTo(b.order));
+      } catch (_) {}
+    }
+
     stopsList.sort((a, b) => a.order.compareTo(b.order));
+
+    // Persistir itinerario para offline
+    try {
+      final cache = await LocalCache.create();
+      await cache.saveStops(
+        stopsList
+            .map(
+              (s) => CachedTripStop(
+                id: s.id,
+                checkpointId: s.checkpointId,
+                name: s.name,
+                address: s.address,
+                lat: s.lat,
+                lng: s.lng,
+                status: s.statusDbCode,
+                order: s.order,
+                etaMinutes: s.etaMinutes,
+                packages: s.packages,
+              ),
+            )
+            .toList(),
+        tripId: tripId,
+      );
+    } catch (_) {}
 
     String vehicleText = 'Sin asignar';
     final vehiculosAsignados = viaje['operations_viajes_vehiculos'] as List?;
@@ -229,6 +309,74 @@ class TripDetailRepository {
           : null,
       stopsList: stopsList,
     );
+  }
+
+  Future<TripDetail?> _loadTripDetailOffline(String tripId) async {
+    try {
+      final cache = await LocalCache.create();
+      final boot = await cache.loadBootstrap();
+      final stops = await cache.loadStops(tripId: tripId);
+      final pkgs = await cache.loadPackages(tripId: tripId);
+
+      if (boot?.trip == null && stops.isEmpty) return null;
+
+      final trip = boot?.trip;
+      final stopsList = stops
+          .map(
+            (s) => TripStop(
+              id: s.id,
+              checkpointId: s.checkpointId,
+              name: s.name,
+              address: s.address,
+              lat: s.lat,
+              lng: s.lng,
+              status: _mapStopStatus(s.status),
+              order: s.order,
+              etaMinutes: s.etaMinutes,
+              packages: s.packages,
+            ),
+          )
+          .toList();
+
+      final vehicleText = boot?.vehicle != null
+          ? '${boot!.vehicle!.plate} · ${boot.vehicle!.brand} ${boot.vehicle!.model}'
+              .trim()
+          : 'Sin asignar';
+
+      final remaining = pkgs.where((p) => p.status != PackageStatus.delivered).length;
+
+      return TripDetail(
+        id: tripId,
+        code: trip?.code ?? '—',
+        origin: trip?.origin ?? 'Origen',
+        destination: trip?.destination ?? 'Destino',
+        originDetail: trip?.routeName,
+        status: trip?.status ?? 'programado',
+        totalDistance: trip?.totalDistance,
+        remainingDistance: trip?.remainingDistance,
+        stops: stopsList.isNotEmpty
+            ? stopsList.length
+            : (trip?.totalStops ?? 0),
+        completedStops: stopsList
+            .where((s) => s.status == StopStatus.completed)
+            .length,
+        packages: pkgs.isNotEmpty ? pkgs.length : (trip?.packagesRemaining ?? 0),
+        packagesRemaining: pkgs.isNotEmpty
+            ? remaining
+            : (trip?.packagesRemaining ?? 0),
+        vehicle: vehicleText,
+        driver: boot?.user.name ?? 'Conductor',
+        departureTime: trip?.departureTime != null
+            ? DateTime.tryParse(trip!.departureTime!)
+            : null,
+        estimatedArrival: trip?.estimatedArrival != null
+            ? DateTime.tryParse(trip!.estimatedArrival!)
+            : null,
+        stopsList: stopsList,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   StopStatus _mapStopStatus(String estado) {

@@ -4,11 +4,16 @@ import 'dart:io';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
+import 'package:tracking_system_app/core/config/constants.dart';
 import 'package:tracking_system_app/core/config/supabase_config.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap_service.dart';
+import 'package:tracking_system_app/core/services/location_service.dart';
+import 'package:tracking_system_app/features/packages/data/package_service.dart';
 import 'package:tracking_system_app/features/sync/data/local_cache.dart';
 import 'package:tracking_system_app/features/sync/data/sync_queue.dart';
+import 'package:tracking_system_app/features/trips/presentation/screens/trip_detail_screen.dart'
+    show TripDetailRepository;
 
 // ============================================================================
 // SYNC ENGINE — Orchestrates offline-first data synchronization
@@ -99,9 +104,13 @@ class SyncEngine extends Notifier<SyncState> {
     final isOnline = results.any((r) => r != ConnectivityResult.none);
 
     if (isOnline && state.status == SyncStatus.offline) {
-      _logger.i('Connectivity restored, triggering sync');
+      _logger.i('Connectivity restored, triggering sync + GPS flush');
       state = state.copyWith(status: SyncStatus.idle);
       syncNow();
+      // Vaciar buffer GPS offline
+      LocationService.instance.flushGpsBuffer().then((n) {
+        if (n > 0) _logger.i('GPS buffer flushed: $n points');
+      });
     } else if (!isOnline) {
       _logger.w('Connectivity lost');
       state = state.copyWith(status: SyncStatus.offline);
@@ -110,27 +119,63 @@ class SyncEngine extends Notifier<SyncState> {
 
   // ─── Public API ────────────────────────────────────
 
-  /// Load bootstrap: try network first, fall back to cache
+  /// Load bootstrap: network when possible, always fall back to local snapshot.
   Future<DriverBootstrap?> loadBootstrap({bool forceRefresh = false}) async {
+    // Ensure cache/queue ready (init is async)
+    _cache ??= await LocalCache.create();
+    _queue ??= await SyncQueue.create();
+
     final isOnline = await _checkOnline();
 
     if (!isOnline) {
-      _logger.i('Offline: loading from cache');
+      _logger.i('Offline: loading bootstrap from cache');
       state = state.copyWith(status: SyncStatus.offline);
-      return await _cache?.loadBootstrap();
+      final cached = await _cache?.loadBootstrap();
+      if (cached != null) {
+        // Marcar device offline en el snapshot devuelto
+        return DriverBootstrap(
+          user: cached.user,
+          driver: cached.driver,
+          vehicle: cached.vehicle,
+          trip: cached.trip,
+          checklist: cached.checklist,
+          currentStop: cached.currentStop,
+          packages: cached.packages,
+          deliverySession: cached.deliverySession,
+          device: BootstrapDevice(
+            gps: cached.device.gps,
+            internet: false,
+            synced: state.pendingOperations == 0,
+          ),
+        );
+      }
+      return null;
     }
 
-    if (!forceRefresh && _cache != null && !await _cache!.isCacheStale()) {
-      _logger.i('Cache fresh: loading from cache');
-      return await _cache?.loadBootstrap();
+    if (!forceRefresh &&
+        _cache != null &&
+        !await _cache!.isCacheStale(offline: false)) {
+      _logger.i('Cache fresh: loading bootstrap from cache');
+      final cached = await _cache?.loadBootstrap();
+      if (cached != null) return cached;
     }
 
     // Try network
     try {
       state = state.copyWith(status: SyncStatus.syncing);
-      final bootstrap = await DriverBootstrapService.instance.fetchBootstrap();
+      DriverBootstrap bootstrap;
+      try {
+        bootstrap = await DriverBootstrapService.instance.fetchBootstrap();
+      } catch (e) {
+        _logger.w('RPC bootstrap failed, using fallback: $e');
+        bootstrap =
+            await DriverBootstrapService.instance.fetchBootstrapFallback();
+      }
 
-      // Cache the result
+      // Enriquecer con paquetes + paradas y guardar snapshot
+      bootstrap = await _attachAndCachePackages(bootstrap);
+      await _cacheStopsForTrip(bootstrap.trip?.id);
+
       await _cache?.saveBootstrap(bootstrap);
       await _cache?.updateSyncMetadata(
         lastSyncAttempt: DateTime.now(),
@@ -154,7 +199,6 @@ class SyncEngine extends Notifier<SyncState> {
         syncFailureCount: (state.pendingOperations) + 1,
       );
 
-      // Fall back to cache
       final cached = await _cache?.loadBootstrap();
 
       state = state.copyWith(
@@ -167,21 +211,101 @@ class SyncEngine extends Notifier<SyncState> {
     }
   }
 
-  /// Enqueue a mutation for offline sync
+  /// Baja paquetes del viaje y los guarda en cache local.
+  Future<DriverBootstrap> _attachAndCachePackages(
+    DriverBootstrap bootstrap,
+  ) async {
+    final tripId = bootstrap.trip?.id;
+    if (tripId == null || tripId.isEmpty) return bootstrap;
+
+    try {
+      // Import lazy via dynamic package service to avoid circular deps —
+      // use PackageService directly
+      final page =
+          await PackageService.instance.fetchPackagesForTripPageOnline(
+        tripId,
+        page: 0,
+        pageSize: AppConstants.maxPageSize,
+      );
+
+      if (page.items.isEmpty) return bootstrap;
+
+      await _cache?.savePackages(page.items, tripId: tripId);
+
+      final bootPkgs = page.items
+          .map(
+            (p) => BootstrapPackage(
+              id: p.id,
+              trackingNumber: p.trackingNumber,
+              status: p.status.name,
+              recipientName: p.recipientName,
+              priority: p.priority.name,
+              weight: p.weight,
+            ),
+          )
+          .toList();
+
+      return DriverBootstrap(
+        user: bootstrap.user,
+        driver: bootstrap.driver,
+        vehicle: bootstrap.vehicle,
+        trip: bootstrap.trip,
+        checklist: bootstrap.checklist,
+        currentStop: bootstrap.currentStop,
+        packages: bootPkgs,
+        deliverySession: bootstrap.deliverySession,
+        device: bootstrap.device,
+      );
+    } catch (e) {
+      _logger.w('attach packages: $e');
+      return bootstrap;
+    }
+  }
+
+  Future<void> _cacheStopsForTrip(String? tripId) async {
+    if (tripId == null || tripId.isEmpty) return;
+    try {
+      // fetchTripDetail ya persiste stops en LocalCache
+      await TripDetailRepository(SupabaseConfig.client).fetchTripDetail(tripId);
+    } catch (e) {
+      _logger.w('cache stops: $e');
+    }
+  }
+
+  /// Enqueue a mutation for offline sync (+ updates optimistas locales).
   Future<void> enqueueOperation(
     SyncOperationType type,
     Map<String, dynamic> payload,
   ) async {
-    if (_queue == null) return;
+    _queue ??= await SyncQueue.create();
+    _cache ??= await LocalCache.create();
+
+    // Optimista: marcar paquetes / parada en snapshot local
+    if (type == SyncOperationType.completeDelivery) {
+      final scanned = payload['scannedPackages'];
+      final packageIds = scanned is List
+          ? scanned.map((e) => e.toString()).where((e) => e.isNotEmpty).toList()
+          : <String>[];
+      if (packageIds.isNotEmpty) {
+        await _cache?.markPackagesDelivered(packageIds);
+      }
+      final stopId = payload['stopId'] as String?;
+      final checkpointId = payload['checkpointId'] as String?;
+      final target = stopId ?? checkpointId;
+      if (target != null && target.isNotEmpty) {
+        await _cache?.markStopStatus(target, 'completado');
+      }
+    }
 
     await _queue!.enqueue(type, payload);
     await _updatePendingCount();
 
     _logger.i('Enqueued operation: ${type.name}');
 
-    // Try to sync immediately if online
     if (await _checkOnline()) {
       syncNow();
+    } else {
+      state = state.copyWith(status: SyncStatus.offline);
     }
   }
 
@@ -195,6 +319,13 @@ class SyncEngine extends Notifier<SyncState> {
 
       final operations = await _queue!.getPendingOperations();
       final readyOperations = operations.where((o) => o.isReady).toList();
+
+      // Flush GPS buffer en cada sync exitoso de red
+      try {
+        await LocationService.instance.flushGpsBuffer();
+      } catch (e) {
+        _logger.w('GPS flush during syncNow: $e');
+      }
 
       if (readyOperations.isEmpty) {
         state = state.copyWith(status: SyncStatus.idle);
@@ -253,6 +384,23 @@ class SyncEngine extends Notifier<SyncState> {
     await _queue!.markProcessing(operation.id);
 
     try {
+      // Idempotencia local: ya aplicada con éxito antes
+      final clientOpId = operation.payload['clientOpId'] as String?;
+      if (clientOpId != null &&
+          await _cache?.isClientOpApplied(clientOpId) == true) {
+        _logger.i('Skip already-applied clientOpId=$clientOpId');
+        await _queue!.markCompleted(operation.id);
+        return;
+      }
+
+      // Preflight de conflictos
+      final conflict = await _detectConflict(operation);
+      if (conflict != null) {
+        await _queue!.markConflict(operation.id, conflict);
+        _logger.w('Conflict ${operation.type.name}: $conflict');
+        return;
+      }
+
       switch (operation.type) {
         case SyncOperationType.completeDelivery:
           await _syncCompleteDelivery(operation.payload);
@@ -270,12 +418,101 @@ class SyncEngine extends Notifier<SyncState> {
           await _syncUpdateTripStatus(operation.payload);
       }
 
+      if (clientOpId != null) {
+        await _cache?.markClientOpApplied(clientOpId);
+      }
       await _queue!.markCompleted(operation.id);
       _logger.i('Completed operation: ${operation.type.name}');
     } catch (e) {
       _logger.e('Failed operation ${operation.type.name}: $e');
-      await _queue!.markFailed(operation.id, e.toString());
+      final msg = e.toString();
+      // Errores que no conviene reintentar
+      if (_isHardConflictError(msg)) {
+        await _queue!.markConflict(operation.id, _humanizeConflict(msg));
+      } else {
+        await _queue!.markFailed(operation.id, msg);
+      }
     }
+  }
+
+  /// Conflictos irrecuperables según estado del servidor.
+  Future<String?> _detectConflict(SyncOperation operation) async {
+    final tripId = operation.payload['tripId'] as String?;
+    if (tripId == null || tripId.isEmpty) return null;
+
+    try {
+      final trip = await SupabaseConfig.client
+          .from('operations_viajes')
+          .select('id, estado, deleted_at')
+          .eq('id', tripId)
+          .maybeSingle();
+
+      if (trip == null || trip['deleted_at'] != null) {
+        // Entregas: el hecho del conductor sigue valiendo si hay paquetes
+        if (operation.type == SyncOperationType.completeDelivery) {
+          return null; // intentar igual (RPC validará)
+        }
+        return 'El viaje ya no existe en el servidor';
+      }
+
+      final estado = (trip['estado'] as String?)?.toLowerCase() ?? '';
+
+      if (operation.type == SyncOperationType.updateTripStatus) {
+        final desired = (operation.payload['status'] as String?)?.toLowerCase();
+        // No reactivar un viaje cancelado
+        if (estado == 'cancelado' &&
+            (desired == 'en_curso' || desired == 'programado')) {
+          return 'El viaje fue cancelado en oficina; no se puede reactivar desde la app';
+        }
+        // Ya completado en servidor: no bajar a en_curso
+        if (estado == 'completado' && desired == 'en_curso') {
+          return 'El viaje ya está completado en el servidor';
+        }
+      }
+
+      // Entrega: si checkpoint no existe → conflicto
+      if (operation.type == SyncOperationType.completeDelivery) {
+        final cpId = operation.payload['checkpointId'] as String?;
+        if (cpId != null) {
+          final cp = await SupabaseConfig.client
+              .from('operations_checkpoints')
+              .select('id, estado, deleted_at')
+              .eq('id', cpId)
+              .maybeSingle();
+          if (cp == null || cp['deleted_at'] != null) {
+            return 'La parada/checkpoint ya no existe en el servidor';
+          }
+          // Ya completado: no es conflicto — se trata como idempotente en sync
+        }
+      }
+    } catch (e) {
+      // Sin red o error de lectura: no marcar conflicto, reintentar
+      _logger.w('detectConflict: $e');
+    }
+    return null;
+  }
+
+  bool _isHardConflictError(String msg) {
+    final m = msg.toLowerCase();
+    return m.contains('access denied') ||
+        m.contains('trip not found') ||
+        m.contains('checkpoint not found') ||
+        m.contains('violates foreign key') ||
+        m.contains('permission denied');
+  }
+
+  String _humanizeConflict(String msg) {
+    final m = msg.toLowerCase();
+    if (m.contains('access denied')) {
+      return 'Sin permiso para esta operación en el servidor';
+    }
+    if (m.contains('trip not found')) {
+      return 'Viaje no encontrado en el servidor';
+    }
+    if (m.contains('checkpoint not found')) {
+      return 'Parada no encontrada en el servidor';
+    }
+    return msg.length > 180 ? '${msg.substring(0, 180)}…' : msg;
   }
 
   // ─── Sync Implementations ──────────────────────────
@@ -286,34 +523,75 @@ class SyncEngine extends Notifier<SyncState> {
         ? scanned.map((e) => e.toString()).where((e) => e.isNotEmpty).toList()
         : <String>[];
 
-    // outcome de la app: complete | incident
     final outcome = (payload['outcome'] as String?) ?? 'complete';
+    final clientOpId = payload['clientOpId'] as String?;
 
-    await SupabaseConfig.client.rpc(
-      'complete_delivery',
-      params: {
-        'p_checkpoint_id': payload['checkpointId'],
-        'p_trip_id': payload['tripId'],
-        'p_stop_id': payload['stopId'],
-        'p_outcome': outcome,
-        'p_incident_reason': payload['incidentReason'],
-        'p_packages_delivered': payload['packagesDelivered'] ?? packageIds.length,
-        if (packageIds.isNotEmpty) 'p_package_ids': packageIds,
-      },
-    );
+    // Si el checkpoint ya está completado, no fallar (idempotencia por estado)
+    final checkpointId = payload['checkpointId'] as String?;
+    if (checkpointId != null) {
+      try {
+        final cp = await SupabaseConfig.client
+            .from('operations_checkpoints')
+            .select('estado')
+            .eq('id', checkpointId)
+            .maybeSingle();
+        if (cp != null &&
+            (cp['estado'] as String?)?.toLowerCase() == 'completado' &&
+            packageIds.isEmpty) {
+          _logger.i('Checkpoint ya completado — skip re-entrega');
+          return;
+        }
+      } catch (_) {}
+    }
 
-    // Entrega con incidencia → también fila en delivery_incidencias
-    // (el RPC solo escribe eventos; la pantalla Incidencias lee esta tabla).
+    final baseParams = <String, dynamic>{
+      'p_checkpoint_id': payload['checkpointId'],
+      'p_trip_id': payload['tripId'],
+      'p_stop_id': payload['stopId'],
+      'p_outcome': outcome,
+      'p_incident_reason': payload['incidentReason'],
+      'p_packages_delivered':
+          payload['packagesDelivered'] ?? packageIds.length,
+      if (packageIds.isNotEmpty) 'p_package_ids': packageIds,
+    };
+
+    try {
+      // Preferir RPC con idempotencia (008)
+      await SupabaseConfig.client.rpc(
+        'complete_delivery',
+        params: {
+          ...baseParams,
+          if (clientOpId != null) 'p_client_op_id': clientOpId,
+        },
+      );
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      // Firma vieja sin p_client_op_id
+      if (msg.contains('p_client_op_id') ||
+          msg.contains('could not find') ||
+          msg.contains('function public.complete_delivery')) {
+        _logger.w('complete_delivery sin p_client_op_id, reintentando…');
+        await SupabaseConfig.client.rpc(
+          'complete_delivery',
+          params: baseParams,
+        );
+      } else {
+        rethrow;
+      }
+    }
+
     if (outcome == 'incident') {
       try {
         await _syncReportIncident({
           'tripId': payload['tripId'],
           'checkpointId': payload['checkpointId'],
           'type': 'otra',
-          'description': (payload['incidentReason'] as String?)?.trim().isNotEmpty == true
-              ? payload['incidentReason']
-              : 'Entrega con incidencia',
+          'description':
+              (payload['incidentReason'] as String?)?.trim().isNotEmpty == true
+                  ? payload['incidentReason']
+                  : 'Entrega con incidencia',
           'packageId': packageIds.isNotEmpty ? packageIds.first : null,
+          'clientOpId': clientOpId != null ? '$clientOpId-inc' : null,
         });
       } catch (e) {
         _logger.w('completeDelivery → delivery_incidencias: $e');
@@ -371,7 +649,12 @@ class SyncEngine extends Notifier<SyncState> {
   }
 
   Future<void> _syncReportIncident(Map<String, dynamic> payload) async {
-    // Tabla canónica trackingV2: delivery_incidencias
+    final clientOpId = payload['clientOpId'] as String?;
+    if (clientOpId != null &&
+        await _cache?.isClientOpApplied(clientOpId) == true) {
+      return;
+    }
+
     final user = SupabaseConfig.client.auth.currentUser;
     String? empresaId;
     String? usuarioId;
@@ -414,6 +697,7 @@ class SyncEngine extends Notifier<SyncState> {
           'metadata': {
             'incidencia_id': row['id'],
             'tipo': tipo,
+            'client_op_id': clientOpId,
             'source': 'sync_engine',
           },
           if (usuarioId != null) 'usuario_id': usuarioId,
@@ -421,14 +705,77 @@ class SyncEngine extends Notifier<SyncState> {
       } catch (e) {
         _logger.w('_syncReportIncident evento: $e');
       }
+
+      // Outbox con clave de idempotencia
+      if (clientOpId != null) {
+        try {
+          await SupabaseConfig.client.from('integration_outbox').insert({
+            'empresa_id': empresaId,
+            'aggregate_type': 'delivery_incidencias',
+            'aggregate_id': row['id'],
+            'event_type': 'incidencia_reportada',
+            'payload': {
+              'incidencia_id': row['id'],
+              'viaje_id': tripId,
+              'tipo': tipo,
+              'client_op_id': clientOpId,
+              'source': 'tracking_system_flutter',
+            },
+            'destino': 'web',
+            'status': 'pendiente',
+            'idempotency_key': 'incidencia:$clientOpId',
+          });
+        } catch (e) {
+          // UNIQUE violation = ya enviada
+          _logger.w('_syncReportIncident outbox: $e');
+        }
+      }
     }
   }
 
   Future<void> _syncUpdateTripStatus(Map<String, dynamic> payload) async {
+    final tripId = payload['tripId'] as String?;
+    final status = payload['status'] as String?;
+    if (tripId == null || status == null) return;
+
+    // Leer estado actual para no sobrescribir con transición inválida
+    final current = await SupabaseConfig.client
+        .from('operations_viajes')
+        .select('estado')
+        .eq('id', tripId)
+        .maybeSingle();
+    final server = (current?['estado'] as String?)?.toLowerCase();
+    final desired = status.toLowerCase();
+
+    if (server == 'cancelado' && desired != 'cancelado') {
+      throw Exception(
+        'Access denied: viaje cancelado no se puede cambiar a $desired',
+      );
+    }
+    if (server == 'completado' &&
+        (desired == 'en_curso' || desired == 'programado')) {
+      throw Exception(
+        'Access denied: viaje completado no se puede reabrir a $desired',
+      );
+    }
+
     await SupabaseConfig.client
         .from('operations_viajes')
-        .update({'estado': payload['status']})
-        .eq('id', payload['tripId']);
+        .update({'estado': status})
+        .eq('id', tripId);
+  }
+
+  Future<void> dismissConflict(String operationId) async {
+    _queue ??= await SyncQueue.create();
+    await _queue!.dismissOperation(operationId);
+    await _updatePendingCount();
+  }
+
+  Future<void> retryFailed(String operationId) async {
+    _queue ??= await SyncQueue.create();
+    await _queue!.retryOperation(operationId);
+    await _updatePendingCount();
+    await syncNow();
   }
 
   Future<bool> _checkOnline() async {
@@ -438,15 +785,17 @@ class SyncEngine extends Notifier<SyncState> {
 
   Future<void> _updatePendingCount() async {
     if (_queue == null) return;
-    final count = await _queue!.pendingCount;
-    state = state.copyWith(pendingOperations: count);
+    final ops = await _queue!.pendingCount;
+    var gps = 0;
+    try {
+      gps = await LocationService.instance.pendingGpsCount();
+    } catch (_) {}
+    state = state.copyWith(pendingOperations: ops + gps);
   }
 
-  @override
-  void dispose() {
+  void disposeEngine() {
     _connectivitySubscription?.cancel();
     _periodicSyncTimer?.cancel();
-    //super.dispose();
   }
 }
 

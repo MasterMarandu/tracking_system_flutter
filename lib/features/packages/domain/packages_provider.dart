@@ -57,7 +57,7 @@ class PackagesPagedNotifier extends Notifier<PagedListState<Package>> {
       final bootstrap = ref.read(bootstrapProvider).valueOrNull;
       final tripId = bootstrap?.trip?.id ?? '';
 
-      final result = tripId.isNotEmpty
+      var result = tripId.isNotEmpty
           ? await PackageService.instance.fetchPackagesForTripPage(
               tripId,
               page: page,
@@ -70,13 +70,36 @@ class PackagesPagedNotifier extends Notifier<PagedListState<Package>> {
               search: _search.isEmpty ? null : _search,
             );
 
+      // Offline sin snapshot de paquetes: usar lista del bootstrap
+      if (result.items.isEmpty &&
+          page == 0 &&
+          bootstrap != null &&
+          bootstrap.packages.isNotEmpty) {
+        result = PageResult(
+          items: bootstrap.packages
+              .map(
+                (bp) => Package(
+                  id: bp.id,
+                  trackingNumber: bp.trackingNumber,
+                  recipientName: bp.recipientName,
+                  status: _statusFromBootstrap(bp.status),
+                  priority: PackagePriority.normal,
+                  weight: bp.weight ?? '—',
+                ),
+              )
+              .toList(),
+          page: 0,
+          pageSize: AppConstants.packagesPageSize,
+          hasMore: false,
+          total: bootstrap.packages.length,
+        );
+      }
+
       var items = result.items;
-      // Filtro local de estado (el catálogo es en servidor; filtramos página)
       if (_statusFilter != null) {
         items = items.where((p) => p.status == _statusFilter).toList();
       }
 
-      // Tope duro en memoria: no acumular más de maxPageSize * 10
       const maxInMemory = AppConstants.packagesPageSize * 10;
       final merged = replace ? items : [...state.items, ...items];
       final capped = merged.length > maxInMemory
@@ -99,6 +122,20 @@ class PackagesPagedNotifier extends Notifier<PagedListState<Package>> {
         error: e.toString(),
       );
     }
+  }
+
+  PackageStatus _statusFromBootstrap(String raw) {
+    final s = raw.toLowerCase();
+    if (s.contains('entreg') || s == 'delivered') {
+      return PackageStatus.delivered;
+    }
+    if (s.contains('ruta') ||
+        s.contains('transit') ||
+        s == 'intransit' ||
+        s == 'in_transit') {
+      return PackageStatus.inTransit;
+    }
+    return PackageStatus.pending;
   }
 }
 

@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tracking_system_app/core/config/supabase_config.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap.dart';
-import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap_service.dart';
+import 'package:tracking_system_app/features/sync/domain/sync_engine.dart';
 
 enum AppAuthStatus { unknown, authenticated, unauthenticated }
 
@@ -19,34 +19,36 @@ class BootstrapNotifier extends AsyncNotifier<DriverBootstrap?> {
   Future<DriverBootstrap?> build() async {
     final session = SupabaseConfig.client.auth.currentSession;
     if (session == null) return null;
-    return _load();
+    return _load(forceRefresh: false);
   }
 
-  Future<DriverBootstrap?> _load() async {
-    debugPrint('Bootstrap: iniciando carga');
+  Future<DriverBootstrap?> _load({required bool forceRefresh}) async {
+    debugPrint('Bootstrap: carga vía SyncEngine (cache + red)');
 
     try {
-      final result = await DriverBootstrapService.instance
-          .fetchBootstrap()
-          .timeout(const Duration(seconds: 15));
+      final result = await ref
+          .read(syncEngineProvider.notifier)
+          .loadBootstrap(forceRefresh: forceRefresh)
+          .timeout(const Duration(seconds: 20));
 
-      debugPrint('Bootstrap: respuesta recibida: $result');
+      debugPrint(
+        'Bootstrap: ok trip=${result?.trip?.code} '
+        'pkgs=${result?.packages.length ?? 0}',
+      );
       return result;
     } catch (e) {
       debugPrint('Bootstrap ERROR: $e');
-
-      // Try fallback
+      // Último recurso: intentar cache sin forzar red (engine ya lo hace)
       try {
-        debugPrint('Bootstrap: intentando fallback');
-        final fallback = await DriverBootstrapService.instance
-            .fetchBootstrapFallback()
-            .timeout(const Duration(seconds: 15));
-        debugPrint('Bootstrap: fallback recibido: $fallback');
-        return fallback;
+        final cached = await ref
+            .read(syncEngineProvider.notifier)
+            .loadBootstrap(forceRefresh: false)
+            .timeout(const Duration(seconds: 8));
+        if (cached != null) return cached;
       } catch (e2) {
-        debugPrint('Bootstrap FALLBACK ERROR: $e2');
-        rethrow;
+        debugPrint('Bootstrap cache ERROR: $e2');
       }
+      rethrow;
     }
   }
 
@@ -58,12 +60,12 @@ class BootstrapNotifier extends AsyncNotifier<DriverBootstrap?> {
     }
 
     state = const AsyncLoading();
-    state = await AsyncValue.guard(() => _load());
+    state = await AsyncValue.guard(() => _load(forceRefresh: false));
   }
 
   Future<void> forceRefresh() async {
     state = const AsyncLoading();
-    state = await AsyncValue.guard(() => _load());
+    state = await AsyncValue.guard(() => _load(forceRefresh: true));
   }
 
   void clear() {

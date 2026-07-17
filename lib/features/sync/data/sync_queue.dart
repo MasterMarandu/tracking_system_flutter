@@ -44,16 +44,45 @@ class SyncQueue {
   }
 
   Future<SyncOperation> enqueue(SyncOperationType type, Map<String, dynamic> payload) async {
+    final clientOpId =
+        (payload['clientOpId'] as String?) ?? _uuid.v4();
+    final enriched = Map<String, dynamic>.from(payload)
+      ..['clientOpId'] = clientOpId;
+
+    final operations = await getPendingOperations();
+
+    // Dedup: misma clientOpId ya en cola
+    final existing = operations.where((o) {
+      final id = o.payload['clientOpId'] as String?;
+      return id == clientOpId &&
+          o.status != SyncOperationStatus.completed;
+    }).toList();
+    if (existing.isNotEmpty) {
+      return existing.first;
+    }
+
+    // Dedup lógica: misma entrega de checkpoint pendiente
+    if (type == SyncOperationType.completeDelivery) {
+      final cp = enriched['checkpointId'] as String?;
+      if (cp != null) {
+        final dup = operations.where((o) =>
+            o.type == SyncOperationType.completeDelivery &&
+            o.payload['checkpointId'] == cp &&
+            (o.status == SyncOperationStatus.pending ||
+                o.status == SyncOperationStatus.processing));
+        if (dup.isNotEmpty) return dup.first;
+      }
+    }
+
     final operation = SyncOperation(
       id: _uuid.v4(),
       type: type,
-      payload: payload,
+      payload: enriched,
       createdAt: DateTime.now(),
       retryCount: 0,
       status: SyncOperationStatus.pending,
     );
 
-    final operations = await getPendingOperations();
     operations.add(operation);
     await _saveOperations(operations);
 
@@ -101,6 +130,25 @@ class SyncQueue {
     await _saveOperations(operations);
   }
 
+  /// Conflicto irrecuperable (no reintentar).
+  Future<void> markConflict(String operationId, String reason) async {
+    final operations = await getPendingOperations();
+    final index = operations.indexWhere((o) => o.id == operationId);
+    if (index == -1) return;
+    operations[index] = operations[index].copyWith(
+      status: SyncOperationStatus.conflict,
+      lastError: reason,
+      nextRetryAt: null,
+    );
+    await _saveOperations(operations);
+  }
+
+  Future<void> dismissOperation(String operationId) async {
+    final operations = await getPendingOperations();
+    operations.removeWhere((o) => o.id == operationId);
+    await _saveOperations(operations);
+  }
+
   Future<void> retryOperation(String operationId) async {
     final operations = await getPendingOperations();
     final index = operations.indexWhere((o) => o.id == operationId);
@@ -129,9 +177,19 @@ class SyncQueue {
 
   Future<int> get pendingCount async {
     final operations = await getPendingOperations();
-    return operations.where((o) =>
-        o.status == SyncOperationStatus.pending ||
-        o.status == SyncOperationStatus.failed).length;
+    return operations
+        .where((o) =>
+            o.status == SyncOperationStatus.pending ||
+            o.status == SyncOperationStatus.failed ||
+            o.status == SyncOperationStatus.conflict)
+        .length;
+  }
+
+  Future<List<SyncOperation>> getConflicts() async {
+    final operations = await getPendingOperations();
+    return operations
+        .where((o) => o.status == SyncOperationStatus.conflict)
+        .toList();
   }
 
   // ─── Private ───────────────────────────────────────
@@ -167,6 +225,8 @@ enum SyncOperationStatus {
   processing,
   completed,
   failed,
+  /// No reintentar: estado del servidor incompatible (viaje cancelado, etc.)
+  conflict,
 }
 
 class SyncOperation {
