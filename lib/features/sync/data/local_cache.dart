@@ -189,6 +189,7 @@ class LocalCache {
   static const _stopsFileName = 'stops_cache.json';
   static const _gpsBufferFileName = 'gps_buffer.json';
   static const _tripContextFileName = 'trip_context.json';
+  static const _gpsTrackingActiveFileName = 'gps_tracking_active.json';
   static const _appliedOpsFileName = 'applied_client_ops.json';
   static const _metadataFileName = 'cache_metadata.json';
 
@@ -250,6 +251,7 @@ class LocalCache {
       _packagesFileName,
       _stopsFileName,
       _tripContextFileName,
+      _gpsTrackingActiveFileName,
       _gpsBufferFileName,
       _appliedOpsFileName,
     ]) {
@@ -428,6 +430,30 @@ class LocalCache {
       return ctx;
     } catch (_) {
       return null;
+    }
+  }
+
+  // ─── Flag: tracking GPS activo (leído por el isolate background) ──
+
+  Future<void> setGpsTrackingActive(bool active) async {
+    final file = File('${_cacheDir.path}/$_gpsTrackingActiveFileName');
+    await file.writeAsString(
+      jsonEncode({
+        'active': active,
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<bool> isGpsTrackingActive() async {
+    try {
+      final file = File('${_cacheDir.path}/$_gpsTrackingActiveFileName');
+      if (!await file.exists()) return false;
+      final json =
+          jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      return json['active'] == true;
+    } catch (_) {
+      return false;
     }
   }
 

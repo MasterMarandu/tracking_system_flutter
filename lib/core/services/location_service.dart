@@ -4,11 +4,15 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:tracking_system_app/core/config/supabase_config.dart';
+import 'package:tracking_system_app/core/services/background_service.dart';
 import 'package:tracking_system_app/core/services/gps_service.dart';
 import 'package:tracking_system_app/core/services/log_service.dart';
 import 'package:tracking_system_app/features/sync/data/local_cache.dart';
 
 /// Servicio que envía la posición GPS del vehículo a Supabase.
+///
+/// Preferencia: [BackgroundService] (sobrevive al cerrar la app).
+/// Fallback: envío en el isolate de la UI si el servicio no arranca.
 /// Sin red: acumula en buffer local y flushea al reconectar.
 class LocationService {
   static LocationService? _instance;
@@ -24,6 +28,10 @@ class LocationService {
   Timer? _sendTimer;
   bool _isActive = false;
   bool get isActive => _isActive;
+
+  /// true si el upload lo hace el isolate de background (no duplicar desde UI).
+  bool _backgroundOwnsUpload = false;
+  bool get backgroundOwnsUpload => _backgroundOwnsUpload;
 
   String? _activeTripId;
   String? _activeVehicleId;
@@ -49,8 +57,9 @@ class LocationService {
     _activeConductorId = conductorId;
     _activeEmpresaId = empresaId;
     _isActive = true;
+    _backgroundOwnsUpload = false;
 
-    // Persistir contexto para reanudar offline
+    // Persistir contexto + flag para el isolate background / boot
     try {
       final cache = await LocalCache.create();
       await cache.saveTripContext(CachedTripContext(
@@ -59,6 +68,7 @@ class LocationService {
         conductorId: conductorId,
         vehiculoId: vehicleId,
       ));
+      await cache.setGpsTrackingActive(true);
     } catch (e) {
       LogService.instance.info('No se pudo guardar trip context: $e');
     }
@@ -72,7 +82,24 @@ class LocationService {
     final hasPermission = await _gps.checkPermissions();
     if (!hasPermission) {
       LogService.instance.error('❌ Sin permisos de GPS');
+    } else {
+      // Pedir "siempre" para tracking con app cerrada (best-effort).
+      await _gps.requestBackgroundPermission();
     }
+
+    // ── Background service (primario) ──
+    try {
+      _backgroundOwnsUpload = await BackgroundService.instance.start();
+    } catch (e) {
+      LogService.instance.info('BackgroundService no disponible: $e');
+      _backgroundOwnsUpload = false;
+    }
+
+    LogService.instance.info(
+      _backgroundOwnsUpload
+          ? '✅ Upload GPS: BackgroundService (sobrevive al cerrar la app)'
+          : '⚠️ Upload GPS: fallback en foreground (UI)',
+    );
 
     Position? initialPos;
     try {
@@ -97,15 +124,21 @@ class LocationService {
       LogService.instance.info('📍 Usando posición fallback: Asunción');
     }
 
-    await _sendPosition(initialPos);
-    // Intentar vaciar buffer previo al arrancar
+    // Primer punto inmediato solo si el background no es el dueño del upload
+    // (evita duplicar con el timer del isolate).
+    if (!_backgroundOwnsUpload) {
+      await _sendPosition(initialPos);
+    }
     unawaited(flushGpsBuffer());
 
+    // Stream GPS para UI (mapa) siempre; upload solo en fallback foreground.
     try {
       await _gps.startTracking();
       _gpsSubscription = _gps.positionStream.listen(
         (position) {
-          _sendPosition(position);
+          if (!_backgroundOwnsUpload) {
+            _sendPosition(position);
+          }
         },
         onError: (error) {
           LogService.instance.error('❌ Error en stream GPS', error);
@@ -115,26 +148,37 @@ class LocationService {
       LogService.instance.info('⚠️ Stream GPS no disponible: $e');
     }
 
-    _sendTimer = Timer.periodic(
-      const Duration(seconds: 10),
-      (_) async {
-        if (!_isActive) return;
-        final pos = _gps.lastPosition ?? initialPos;
-        if (pos != null) {
-          await _sendPosition(pos);
-        }
-      },
-    );
+    if (!_backgroundOwnsUpload) {
+      _sendTimer = Timer.periodic(
+        const Duration(seconds: 10),
+        (_) async {
+          if (!_isActive || _backgroundOwnsUpload) return;
+          final pos = _gps.lastPosition ?? initialPos;
+          if (pos != null) {
+            await _sendPosition(pos);
+          }
+        },
+      );
+    }
 
     LogService.instance.info('✅ LocationService completamente activo');
   }
 
   Future<void> stopTracking() async {
-    if (!_isActive) return;
+    if (!_isActive) {
+      // Aun si la UI no tenía estado, apagar flag + servicio por si quedó colgado.
+      try {
+        final cache = await LocalCache.create();
+        await cache.setGpsTrackingActive(false);
+      } catch (_) {}
+      await BackgroundService.instance.stop();
+      return;
+    }
 
     LogService.instance.info('LocationService detenido');
 
     _isActive = false;
+    _backgroundOwnsUpload = false;
     _activeTripId = null;
     _activeVehicleId = null;
     _activeConductorId = null;
@@ -147,6 +191,13 @@ class LocationService {
     _sendTimer = null;
 
     await _gps.stopTracking();
+
+    try {
+      final cache = await LocalCache.create();
+      await cache.setGpsTrackingActive(false);
+    } catch (_) {}
+
+    await BackgroundService.instance.stop();
   }
 
   /// Envía posición; si falla, encola en buffer local.
@@ -187,7 +238,6 @@ class LocationService {
       LogService.instance.debug(
         'GPS enviado: ${position.latitude}, ${position.longitude}',
       );
-      // Tras un envío OK, intentar flush del buffer
       unawaited(flushGpsBuffer());
     } catch (e) {
       LogService.instance.info('GPS offline/error → buffer local: $e');
@@ -247,9 +297,7 @@ class LocationService {
               .from('tracking_gps')
               .insert(point.toTrackingGpsInsert());
 
-          // Actualizar última posición solo con el más reciente del lote
-          if (i == pending.length - 1 ||
-              (i + 1) % batchSize == 0) {
+          if (i == pending.length - 1 || (i + 1) % batchSize == 0) {
             final nowUtc = DateTime.now().toUtc().toIso8601String();
             final ubicacionWkt = 'POINT(${point.lng} ${point.lat})';
             await _client.from('tracking_ultima_posicion').upsert(
@@ -276,7 +324,6 @@ class LocationService {
           }
           flushed++;
         } catch (e) {
-          // Dejar este y los siguientes para otro intento
           remaining.addAll(pending.sublist(i));
           LogService.instance.info(
             'Flush GPS detenido en $i/$flushed enviados: $e',

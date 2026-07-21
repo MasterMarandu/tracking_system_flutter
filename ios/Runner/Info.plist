@@ -66,5 +66,21 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Routio necesita tu ubicación para seguir el viaje y las entregas en curso.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Routio necesita ubicación en segundo plano para seguir enviando tu posición aunque cierres la app durante un viaje activo.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Routio necesita ubicación en segundo plano para el seguimiento del viaje del conductor.</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>dev.flutter.background.refresh</string>
+	</array>
 </dict>
 </plist>

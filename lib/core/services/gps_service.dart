@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:tracking_system_app/core/config/constants.dart';
 
 class GpsService {
@@ -43,6 +44,32 @@ class GpsService {
     }
     
     return true;
+  }
+
+  /// Solicita ubicación en segundo plano ("Permitir siempre").
+  /// En Android 10+ es un diálogo separado; si el usuario niega, el FGS
+  /// puede seguir funcionando con la app en recientes, pero no al matarla.
+  Future<bool> requestBackgroundPermission() async {
+    try {
+      final whenInUse = await checkPermissions();
+      if (!whenInUse) return false;
+
+      var geo = await Geolocator.checkPermission();
+      if (geo == LocationPermission.always) return true;
+
+      // Geolocator: en algunos OS el segundo request sube a "always".
+      geo = await Geolocator.requestPermission();
+      if (geo == LocationPermission.always) return true;
+
+      // permission_handler: diálogo Android "ubicación todo el tiempo".
+      final status = await Permission.locationAlways.request();
+      if (status.isGranted) return true;
+
+      geo = await Geolocator.checkPermission();
+      return geo == LocationPermission.always;
+    } catch (_) {
+      return false;
+    }
   }
   
   Future<Position?> getCurrentPosition() async {

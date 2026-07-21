@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tracking_system_app/core/config/app_config.dart';
 import 'package:tracking_system_app/core/router/app_router.dart';
 import 'package:tracking_system_app/core/theme/app_theme.dart';
+import 'package:tracking_system_app/core/services/background_service.dart';
 import 'package:tracking_system_app/core/services/connectivity_service.dart';
 import 'package:tracking_system_app/core/services/notification_service.dart';
 import 'package:tracking_system_app/features/settings/domain/settings_provider.dart';
@@ -12,6 +13,8 @@ void main() async {
   
   await ConnectivityService.instance.initialize();
   await NotificationService.instance.initialize();
+  // Configura el FGS de GPS (no lo arranca; se inicia al navegar un viaje).
+  await BackgroundService.instance.initialize();
   
   runApp(
     const ProviderScope(
