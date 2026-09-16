@@ -116,8 +116,6 @@ class CurrentTripService {
           .eq('conductor_id', ctx.conductorId)
           .filter('deleted_at', 'is', null);
 
-      if (data.isEmpty) return null;
-
       // Filtrar solo viajes activos y ordenar por prioridad
       final activeTrips = (data as List)
           .map((item) => item['viaje'] as Map<String, dynamic>)
@@ -134,7 +132,13 @@ class CurrentTripService {
           return orderA.compareTo(orderB);
         });
 
-      if (activeTrips.isEmpty) return null;
+      // Fallback: si la consulta anidada no devolvió un activo (p.ej. falla del
+      // select con joins), derivarlo de la lista liviana que SÍ funciona en
+      // "Mis viajes". Evita que el Dashboard quede vacío mientras Trips muestra
+      // viajes programados.
+      if (activeTrips.isEmpty) {
+        return _firstActiveFromList();
+      }
 
       final v = activeTrips.first;
       final checkpoints = v['checkpoints'] as List? ?? [];
@@ -187,6 +191,22 @@ class CurrentTripService {
       );
     } catch (e) {
       debugPrint('CurrentTripService.fetchActiveTrip error: $e');
+      // La consulta anidada falló → intentar con la lista liviana.
+      return _firstActiveFromList();
+    }
+  }
+
+  /// Deriva el viaje activo prioritario reutilizando la consulta liviana de
+  /// "Mis viajes" (fetchAllTrips), que no depende del select anidado pesado.
+  Future<ActiveTripData?> _firstActiveFromList() async {
+    try {
+      final all = await fetchAllTrips(page: 0, pageSize: 50);
+      final active = all.where((t) => t.isActive).toList()
+        ..sort((a, b) =>
+            _priorityOrder(a.status).compareTo(_priorityOrder(b.status)));
+      return active.isEmpty ? null : active.first;
+    } catch (e) {
+      debugPrint('CurrentTripService._firstActiveFromList error: $e');
       return null;
     }
   }

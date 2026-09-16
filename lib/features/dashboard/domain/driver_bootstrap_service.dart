@@ -110,7 +110,10 @@ class DriverBootstrapService {
     BootstrapChecklist? checklist;
     BootstrapCurrentStop? currentStop;
 
-    if (activeTrip != null && activeTrip.conductorId == conductorId) {
+    // fetchActiveTrip ya resuelve el viaje del conductor del usuario logueado,
+    // así que no volvemos a exigir conductorId igual (esa doble verificación
+    // dejaba el Dashboard vacío aunque "Mis viajes" mostrara el viaje).
+    if (activeTrip != null) {
       trip = BootstrapTrip(
         id: activeTrip.id,
         code: activeTrip.code,

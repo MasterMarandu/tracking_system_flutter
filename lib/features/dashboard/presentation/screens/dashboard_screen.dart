@@ -278,7 +278,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
-              onPressed: () => ref.read(bootstrapProvider.notifier).loadBootstrap(),
+              onPressed: () => ref.read(bootstrapProvider.notifier).forceRefresh(),
               icon: const Icon(Icons.refresh),
               label: const Text('REINTENTAR'),
             ),
@@ -329,7 +329,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   onPressed: () =>
-                      ref.read(bootstrapProvider.notifier).loadBootstrap(),
+                      ref.read(bootstrapProvider.notifier).forceRefresh(),
                   icon: const Icon(Icons.refresh),
                   label: const Text('ACTUALIZAR'),
                   style: ElevatedButton.styleFrom(
@@ -368,7 +368,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
   Future<void> _refreshData() async {
     try {
-      await ref.read(bootstrapProvider.notifier).loadBootstrap();
+      // Refresco explícito del usuario (pull-to-refresh) → saltar el cache y
+      // consultar la red, si no seguiría mostrando el snapshot cacheado.
+      await ref.read(bootstrapProvider.notifier).forceRefresh();
     } catch (_) {}
   }
 
