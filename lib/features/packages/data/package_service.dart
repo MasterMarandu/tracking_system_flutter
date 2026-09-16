@@ -161,12 +161,10 @@ class PackageService {
     int pageSize = AppConstants.packagesPageSize,
     String? search,
   }) async {
+    // Sin viaje no hay paquetes que mostrar al conductor (no exponer inventario
+    // de la empresa). La UI muestra estado "sin viaje activo".
     if (tripId.isEmpty) {
-      return fetchEmpresaPackagesPage(
-        page: page,
-        pageSize: pageSize,
-        search: search,
-      );
+      return PageResult.empty(page: page, pageSize: pageSize);
     }
 
     try {
@@ -225,17 +223,8 @@ class PackageService {
         .toList();
 
     if (packageIds.isEmpty) {
-      if (page == 0) {
-        final empresa = await fetchEmpresaPackagesPage(
-          page: page,
-          pageSize: pageSize,
-          search: search,
-        );
-        if (empresa.items.isNotEmpty) {
-          await _persistPackages(empresa.items, tripId: tripId);
-        }
-        return empresa;
-      }
+      // El viaje no tiene paquetes asignados: no rellenar con el inventario de
+      // la empresa (cada conductor solo ve la carga de su viaje).
       return PageResult.empty(page: page, pageSize: pageSize);
     }
 

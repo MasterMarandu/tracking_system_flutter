@@ -57,6 +57,8 @@ class PackagesPagedNotifier extends Notifier<PagedListState<Package>> {
       final bootstrap = ref.read(bootstrapProvider).valueOrNull;
       final tripId = bootstrap?.trip?.id ?? '';
 
+      // El conductor solo ve los paquetes de SU viaje activo. Sin viaje no se
+      // muestra el inventario de la empresa (evita fuga de datos entre choferes).
       var result = tripId.isNotEmpty
           ? await PackageService.instance.fetchPackagesForTripPage(
               tripId,
@@ -64,10 +66,9 @@ class PackagesPagedNotifier extends Notifier<PagedListState<Package>> {
               pageSize: AppConstants.packagesPageSize,
               search: _search.isEmpty ? null : _search,
             )
-          : await PackageService.instance.fetchEmpresaPackagesPage(
+          : PageResult<Package>.empty(
               page: page,
               pageSize: AppConstants.packagesPageSize,
-              search: _search.isEmpty ? null : _search,
             );
 
       // Offline sin snapshot de paquetes: usar lista del bootstrap
@@ -145,17 +146,15 @@ final packagesPagedProvider =
 );
 
 /// Compat: primera página (detalle / router).
+/// El conductor solo ve paquetes de su viaje activo; sin viaje, lista vacía.
 final packagesProvider = FutureProvider<List<Package>>((ref) async {
   ref.watch(bootstrapProvider);
   final bootstrap = ref.watch(bootstrapProvider).valueOrNull;
   final tripId = bootstrap?.trip?.id;
-  if (tripId != null && tripId.isNotEmpty) {
-    final page = await PackageService.instance.fetchPackagesForTripPage(
-      tripId,
-      page: 0,
-    );
-    if (page.items.isNotEmpty) return page.items;
-  }
-  final page = await PackageService.instance.fetchEmpresaPackagesPage(page: 0);
+  if (tripId == null || tripId.isEmpty) return <Package>[];
+  final page = await PackageService.instance.fetchPackagesForTripPage(
+    tripId,
+    page: 0,
+  );
   return page.items;
 });

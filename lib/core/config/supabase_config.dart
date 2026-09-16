@@ -1,9 +1,23 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+/// Configuración de Supabase para la app del conductor.
+///
+/// SCHEMA OFICIAL (única fuente de verdad, ADR-011):
+///   logistics-trip-planner-interface/database/trackingV2.sql
+/// Toda tabla / vista / RPC referenciada aquí DEBE existir en ese archivo.
+/// Este repo NO define ni duplica el DDL; solo consume el schema oficial.
+///
+/// Credenciales: preferir inyección por --dart-define en build/CI.
+/// Fallback a los valores por defecto solo para desarrollo local.
 class SupabaseConfig {
-  // TODO: Replace with your Supabase credentials
-  static const String supabaseUrl = 'https://kodeainncvxncxdbihwr.supabase.co';
-  static const String supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtvZGVhaW5uY3Z4bmN4ZGJpaHdyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MTcyNDcsImV4cCI6MjA5OTA5MzI0N30.radeL6husEzum6-QmdzM_igA581tC1h2fE4GhYhv9oE';
+  static const String supabaseUrl = String.fromEnvironment(
+    'SUPABASE_URL',
+    defaultValue: 'https://kodeainncvxncxdbihwr.supabase.co',
+  );
+  static const String supabaseAnonKey = String.fromEnvironment(
+    'SUPABASE_ANON_KEY',
+    defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtvZGVhaW5uY3Z4bmN4ZGJpaHdyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MTcyNDcsImV4cCI6MjA5OTA5MzI0N30.radeL6husEzum6-QmdzM_igA581tC1h2fE4GhYhv9oE',
+  );
   
   // Storage Buckets
   static const String bucketAvatars = 'avatars';

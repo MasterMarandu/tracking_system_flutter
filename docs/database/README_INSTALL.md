@@ -1,58 +1,42 @@
-# Instalación desde cero - Tracking System
+# Base de datos — App del conductor (Routio)
 
-## Orden de ejecución
+## Fuente de verdad ÚNICA del schema
 
-1. **`00_drop_all.sql`** — Limpia TODA la base de datos (⚠️ borra todo)
-2. **`tracking.sql`** — Schema completo (tablas, índices, RLS, triggers básicos)
-3. **`migrations/001_delivery_rpcs.sql`** — RPCs de delivery
-4. **`migrations/002_auto_checkpoints.sql`** — Trigger que genera checkpoints automáticamente
-5. **`migrations/003_validate_empresa_assignments.sql`** — Trigger que valida empresa en asignaciones
-6. **`06_seed_data.sql`** — Datos de prueba mínimos
+El DDL oficial del ecosistema Routio vive **solo** en el repositorio web:
 
-## Cómo ejecutar
-
-### Opción A: Script maestro (recomendado)
-
-Si tenés acceso a `psql`:
-
-```bash
-psql -h <host> -U postgres -d postgres -f 00_install_master.sql
+```
+logistics-trip-planner-interface/database/trackingV2.sql
 ```
 
-### Opción B: Manual desde Supabase SQL Editor
+Este repositorio (`tracking_system_flutter`) **consume** ese schema; **no lo define ni lo duplica** (ADR-011). Por eso se eliminaron de aquí los antiguos `trackingV2.sql`, `tracking.sql`, `1_all.sql`, `2_all.sql`, `00_install_master.sql`, `00_drop_all.sql` y la carpeta `migrations/`: todo eso quedó consolidado en el archivo oficial, incluidos los objetos que usa la app:
 
-Ejecutá cada archivo en orden en el SQL Editor de Supabase.
+- Tabla `operations_checkpoints` con columnas `metadata`, `foto_evidencia_url`, `firma_receptor`, `otp_expires_at`.
+- RPC `get_driver_bootstrap()` — payload de arranque de la app.
+- RPC `complete_delivery(...)` — cierre de entrega idempotente por `client_op_id`.
+- RPC `verify_delivery_otp(...)` — verificación de OTP de entrega.
 
-## Pasos previos en Supabase Dashboard
+## Instalación en limpio
 
-Antes de ejecutar el seed data:
+1. En el proyecto Supabase, ejecutar **`database/trackingV2.sql`** del repo web (SQL Editor o `psql`).
+2. Eso deja el schema completo + los RPCs que consume esta app.
 
-1. **Crear usuario en `auth.users`:**
-   - Ir a Authentication → Users → Add user
-   - Email: `marcos@gmail.com` (o el que quieras)
-   - Auto Confirm User: ✅
-   - Guardar el `auth_user_id` (UUID)
-
-2. **Editar `06_seed_data.sql`:**
-   - Reemplazar `v_auth_user_id` con el UUID real
-   - Reemplazar el email si es distinto
+```bash
+# desde el repo web
+psql -h <host> -U postgres -d postgres -f database/trackingV2.sql
+```
 
 ## Verificación post-instalación
 
 ```sql
--- Verificar que el trigger de validación existe
+-- Triggers clave
 SELECT trigger_name FROM information_schema.triggers
-WHERE trigger_name = 'trg_validate_viaje_conductor_empresa';
+WHERE trigger_name IN ('trg_auto_generate_checkpoints');
 
--- Verificar que el trigger de auto-checkpoints existe
-SELECT trigger_name FROM information_schema.triggers
-WHERE trigger_name = 'trg_auto_generate_checkpoints';
-
--- Verificar RPCs
+-- RPCs que usa la app
 SELECT routine_name FROM information_schema.routines
 WHERE routine_name IN ('complete_delivery', 'verify_delivery_otp', 'get_driver_bootstrap');
 
--- Probar la RPC con el usuario creado
+-- Probar el bootstrap con el usuario autenticado
 SELECT public.get_driver_bootstrap();
 ```
 
@@ -70,4 +54,8 @@ auth.users.id  →  core_usuarios.auth_user_id
                   operations_viajes_conductores.conductor_id
 ```
 
-**Importante:** En `operations_viajes_conductores.conductor_id` se debe guardar `fleet_conductores.id`, **NUNCA** `fleet_conductores.usuario_id`.
+**Importante:** en `operations_viajes_conductores.conductor_id` se guarda `fleet_conductores.id`, **nunca** `fleet_conductores.usuario_id`.
+
+## Cambios de modelo
+
+Todo cambio de schema se hace **primero** en `logistics-trip-planner-interface/database/trackingV2.sql`, luego se alinea Drizzle (`src/db/schema.ts`) y, si hay DBs vivas, una migración incremental en el repo web. Nunca se redefine el schema desde este repo.
