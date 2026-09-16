@@ -250,7 +250,11 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
         const SizedBox(height: 20),
         ElevatedButton.icon(
           onPressed: () =>
-              ref.read(deliveryFlowProvider.notifier).advanceStep(),
+              ref.read(deliveryFlowProvider.notifier).confirmArrival(
+                    tripId: widget.tripId,
+                    stopId: widget.stopId,
+                    checkpointId: widget.checkpointId,
+                  ),
           icon: const Icon(Icons.qr_code_scanner),
           label: const Text('INICIAR ENTREGA'),
           style: ElevatedButton.styleFrom(

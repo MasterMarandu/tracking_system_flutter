@@ -72,6 +72,28 @@ class DeliveryFlowController extends Notifier<DeliveryFlowState> {
     state = state.copyWith(currentStep: steps[currentIndex + 1]);
   }
 
+  /// Confirma la llegada a la parada: registra hora_llegada (checkpoint 'llego')
+  /// vía la cola de sync (offline-first) y avanza al siguiente paso.
+  /// La web usa hora_llegada para mostrar cuándo llegó el conductor a cada parada.
+  Future<void> confirmArrival({
+    required String tripId,
+    required String? stopId,
+    required String? checkpointId,
+  }) async {
+    if (checkpointId != null) {
+      await ref.read(syncEngineProvider.notifier).enqueueOperation(
+            SyncOperationType.markArrival,
+            {
+              'tripId': tripId,
+              if (stopId != null) 'stopId': stopId,
+              'checkpointId': checkpointId,
+              'arrivedAt': DateTime.now().toUtc().toIso8601String(),
+            },
+          );
+    }
+    advanceStep();
+  }
+
   void togglePackageScan(String packageId) {
     final updated = Set<String>.from(state.scannedPackageIds);
     if (updated.contains(packageId)) {

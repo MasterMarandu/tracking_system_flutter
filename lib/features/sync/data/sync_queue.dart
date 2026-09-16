@@ -218,6 +218,7 @@ enum SyncOperationType {
   submitSignature,
   reportIncident,
   updateTripStatus,
+  markArrival,
 }
 
 enum SyncOperationStatus {

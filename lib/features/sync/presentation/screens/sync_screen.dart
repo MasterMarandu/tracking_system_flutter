@@ -688,6 +688,8 @@ class _OperationTile extends StatelessWidget {
         return Icons.report_outlined;
       case SyncOperationType.updateTripStatus:
         return Icons.route_outlined;
+      case SyncOperationType.markArrival:
+        return Icons.pin_drop_outlined;
     }
   }
 
@@ -707,6 +709,8 @@ class _OperationTile extends StatelessWidget {
         return 'Incidencia';
       case SyncOperationType.updateTripStatus:
         return 'Estado del viaje';
+      case SyncOperationType.markArrival:
+        return 'Llegada a parada';
     }
   }
 

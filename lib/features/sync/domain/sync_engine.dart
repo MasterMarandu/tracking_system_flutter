@@ -416,6 +416,8 @@ class SyncEngine extends Notifier<SyncState> {
           await _syncReportIncident(operation.payload);
         case SyncOperationType.updateTripStatus:
           await _syncUpdateTripStatus(operation.payload);
+        case SyncOperationType.markArrival:
+          await _syncMarkArrival(operation.payload);
       }
 
       if (clientOpId != null) {
@@ -763,6 +765,35 @@ class SyncEngine extends Notifier<SyncState> {
         .from('operations_viajes')
         .update({'estado': status})
         .eq('id', tripId);
+  }
+
+  /// Registra la llegada del conductor a una parada: checkpoint 'llego' + hora_llegada.
+  /// La web usa hora_llegada para mostrar cuándo se llegó a cada parada.
+  /// Idempotente: no pisa un checkpoint ya 'completado' ni una hora_llegada previa.
+  Future<void> _syncMarkArrival(Map<String, dynamic> payload) async {
+    final checkpointId = payload['checkpointId'] as String?;
+    if (checkpointId == null) return;
+    final arrivedAt =
+        (payload['arrivedAt'] as String?) ?? DateTime.now().toUtc().toIso8601String();
+
+    // No degradar un checkpoint ya completado a 'llego'.
+    final cp = await SupabaseConfig.client
+        .from('operations_checkpoints')
+        .select('estado, hora_llegada')
+        .eq('id', checkpointId)
+        .maybeSingle();
+    final estadoActual = (cp?['estado'] as String?)?.toLowerCase();
+    if (estadoActual == 'completado' || estadoActual == 'omitido') {
+      return;
+    }
+    // Si ya tenía hora_llegada, no la reescribimos (idempotencia).
+    final yaLlego = cp?['hora_llegada'] != null;
+
+    await SupabaseConfig.client.from('operations_checkpoints').update({
+      'estado': 'llego',
+      if (!yaLlego) 'hora_llegada': arrivedAt,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('id', checkpointId);
   }
 
   Future<void> dismissConflict(String operationId) async {

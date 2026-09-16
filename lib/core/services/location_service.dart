@@ -40,6 +40,10 @@ class LocationService {
 
   bool _flushing = false;
 
+  // Nota: la distancia recorrida se calcula en el SERVIDOR desde tracking_gps
+  // (RPC get_trip_traveled_km), no en el móvil. Esto es robusto a la app cerrada,
+  // cuando el upload lo hace el BackgroundService en otro isolate (ADR/TD-023).
+
   /// Inicia el envío de posición GPS para un viaje
   Future<void> startTracking({
     required String tripId,
@@ -48,7 +52,9 @@ class LocationService {
     required String empresaId,
   }) async {
     if (_isActive) {
-      LogService.instance.info('LocationService ya está activo, reiniciando...');
+      LogService.instance.info(
+        'LocationService ya está activo, reiniciando...',
+      );
       await stopTracking();
     }
 
@@ -62,12 +68,14 @@ class LocationService {
     // Persistir contexto + flag para el isolate background / boot
     try {
       final cache = await LocalCache.create();
-      await cache.saveTripContext(CachedTripContext(
-        tripId: tripId,
-        empresaId: empresaId,
-        conductorId: conductorId,
-        vehiculoId: vehicleId,
-      ));
+      await cache.saveTripContext(
+        CachedTripContext(
+          tripId: tripId,
+          empresaId: empresaId,
+          conductorId: conductorId,
+          vehiculoId: vehicleId,
+        ),
+      );
       await cache.setGpsTrackingActive(true);
     } catch (e) {
       LogService.instance.info('No se pudo guardar trip context: $e');
@@ -149,16 +157,13 @@ class LocationService {
     }
 
     if (!_backgroundOwnsUpload) {
-      _sendTimer = Timer.periodic(
-        const Duration(seconds: 10),
-        (_) async {
-          if (!_isActive || _backgroundOwnsUpload) return;
-          final pos = _gps.lastPosition ?? initialPos;
-          if (pos != null) {
-            await _sendPosition(pos);
-          }
-        },
-      );
+      _sendTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+        if (!_isActive || _backgroundOwnsUpload) return;
+        final pos = _gps.lastPosition ?? initialPos;
+        if (pos != null) {
+          await _sendPosition(pos);
+        }
+      });
     }
 
     LogService.instance.info('✅ LocationService completamente activo');
@@ -231,10 +236,9 @@ class LocationService {
 
     try {
       await _client.from('tracking_gps').insert(dataGps);
-      await _client.from('tracking_ultima_posicion').upsert(
-            dataUltima,
-            onConflict: 'vehiculo_id',
-          );
+      await _client
+          .from('tracking_ultima_posicion')
+          .upsert(dataUltima, onConflict: 'vehiculo_id');
       LogService.instance.debug(
         'GPS enviado: ${position.latitude}, ${position.longitude}',
       );
@@ -300,27 +304,24 @@ class LocationService {
           if (i == pending.length - 1 || (i + 1) % batchSize == 0) {
             final nowUtc = DateTime.now().toUtc().toIso8601String();
             final ubicacionWkt = 'POINT(${point.lng} ${point.lat})';
-            await _client.from('tracking_ultima_posicion').upsert(
-              {
-                'vehiculo_id': point.vehiculoId,
-                'empresa_id': point.empresaId,
-                'viaje_id': point.viajeId,
-                'conductor_id': point.conductorId,
-                'latitud': point.lat,
-                'longitud': point.lng,
-                'ubicacion': ubicacionWkt,
-                'precision_m': point.accuracy,
-                'velocidad_kmh': (point.speedMps ?? 0) * 3.6,
-                'rumbo': point.heading,
-                'bateria': 100,
-                'internet': true,
-                'gps': true,
-                'satelites': 0,
-                'created_at': point.recordedAt.toUtc().toIso8601String(),
-                'updated_at': nowUtc,
-              },
-              onConflict: 'vehiculo_id',
-            );
+            await _client.from('tracking_ultima_posicion').upsert({
+              'vehiculo_id': point.vehiculoId,
+              'empresa_id': point.empresaId,
+              'viaje_id': point.viajeId,
+              'conductor_id': point.conductorId,
+              'latitud': point.lat,
+              'longitud': point.lng,
+              'ubicacion': ubicacionWkt,
+              'precision_m': point.accuracy,
+              'velocidad_kmh': (point.speedMps ?? 0) * 3.6,
+              'rumbo': point.heading,
+              'bateria': 100,
+              'internet': true,
+              'gps': true,
+              'satelites': 0,
+              'created_at': point.recordedAt.toUtc().toIso8601String(),
+              'updated_at': nowUtc,
+            }, onConflict: 'vehiculo_id');
           }
           flushed++;
         } catch (e) {
@@ -366,8 +367,7 @@ class LocationService {
     required bool online,
     required DateTime recordedAt,
   }) {
-    final ubicacionWkt =
-        'POINT(${position.longitude} ${position.latitude})';
+    final ubicacionWkt = 'POINT(${position.longitude} ${position.latitude})';
     return {
       'empresa_id': empresaId,
       'viaje_id': viajeId,
@@ -397,8 +397,7 @@ class LocationService {
     required bool online,
   }) {
     final nowUtc = DateTime.now().toUtc().toIso8601String();
-    final ubicacionWkt =
-        'POINT(${position.longitude} ${position.latitude})';
+    final ubicacionWkt = 'POINT(${position.longitude} ${position.latitude})';
     return {
       'vehiculo_id': vehiculoId,
       'empresa_id': empresaId,

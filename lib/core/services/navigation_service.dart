@@ -91,6 +91,21 @@ class NavigationService {
         'hora_real_salida': nowUtc,
         'updated_at': nowUtc,
       }).eq('id', tripId);
+
+      // Al arrancar, la carga del viaje pasa a "en tránsito" (la web lo muestra
+      // en el tile "En tránsito"). Solo los que aún no están entregados/reasignados.
+      // Best-effort: si falla (offline), no bloquea el inicio del viaje; el estado
+      // real se corrige al entregar (complete_delivery marca 'entregado').
+      try {
+        await _client
+            .from('operations_viajes_paquetes')
+            .update({'estado': 'en_transito', 'updated_at': nowUtc})
+            .eq('viaje_id', tripId)
+            .filter('deleted_at', 'is', null)
+            .not('estado', 'in', '(entregado,reasignado)');
+      } catch (e) {
+        debugPrint('NavigationService en_transito update: $e');
+      }
     }
 
     return NavigationResult(
