@@ -222,7 +222,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF4F6F5),
       body: SafeArea(
+        bottom: false,
         child: Column(
           children: [
             OperationStatusBar(
@@ -230,6 +232,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               isDark: isDark,
               tripState: tripState,
               pendingSyncCount: syncState.pendingOperations,
+              driverName: _tripData.driverName,
             ),
             Expanded(
               child: bootstrapAsync.when(

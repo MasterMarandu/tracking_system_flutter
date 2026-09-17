@@ -113,11 +113,19 @@ class PrimaryActionButton extends StatelessWidget {
       case TripState.geofenceEntry:
         return Column(
           children: [
-            ElevatedButton.icon(
+            ElevatedButton(
               onPressed: onStartDelivery,
-              icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('INICIAR ENTREGA'),
-              style: _buttonStyle(Colors.purple),
+              style: _buttonStyle(const Color(0xFFF59E42)),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.navigation, size: 20),
+                  SizedBox(width: 10),
+                  Text('INICIAR ENTREGA'),
+                  SizedBox(width: 8),
+                  Icon(Icons.chevron_right, size: 20),
+                ],
+              ),
             ),
             const SizedBox(height: 8),
             TextButton(
@@ -165,9 +173,15 @@ class PrimaryActionButton extends StatelessWidget {
     return ElevatedButton.styleFrom(
       backgroundColor: color,
       foregroundColor: Colors.white,
-      minimumSize: const Size(double.infinity, 56),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 0,
+      minimumSize: const Size(double.infinity, 58),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      elevation: 2,
+      shadowColor: color.withValues(alpha: 0.4),
+      textStyle: const TextStyle(
+        fontSize: 15,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 0.3,
+      ),
     );
   }
 }
