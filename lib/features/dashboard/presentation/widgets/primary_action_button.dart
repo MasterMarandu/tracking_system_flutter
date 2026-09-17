@@ -56,27 +56,39 @@ class PrimaryActionButton extends StatelessWidget {
       case TripState.noTrip:
         return const SizedBox.shrink();
       case TripState.preTrip:
+        // Un solo CTA contextual (no dos botones grandes para una decisión):
+        //  - checklist incompleto → "Completar checklist" (no inicia el viaje).
+        //  - checklist aprobado   → "Iniciar viaje" (decisión separada, explícita).
+        if (!canStartTrip) {
+          return Column(
+            children: [
+              ElevatedButton.icon(
+                onPressed: onPreTripChecklist,
+                icon: const Icon(Icons.assignment),
+                label: const Text('COMPLETAR CHECKLIST'),
+                style: _buttonStyle(Colors.orange),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text('Necesario antes de iniciar el viaje',
+                    style: TextStyle(fontSize: 11, color: Colors.grey)),
+              ),
+            ],
+          );
+        }
         return Column(
           children: [
             ElevatedButton.icon(
-              onPressed: onPreTripChecklist,
-              icon: const Icon(Icons.assignment),
-              label: const Text('INICIAR CHECKLIST'),
-              style: _buttonStyle(Colors.orange),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton.icon(
-              onPressed: canStartTrip ? onStartTrip : null,
+              onPressed: onStartTrip,
               icon: const Icon(Icons.play_arrow),
               label: const Text('INICIAR VIAJE'),
               style: _buttonStyle(Colors.green),
             ),
-            if (!canStartTrip)
-              const Padding(
-                padding: EdgeInsets.only(top: 6),
-                child: Text('Completa el checklist para habilitar',
-                    style: TextStyle(fontSize: 11, color: Colors.grey)),
-              ),
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text('Revisión previa completada',
+                  style: TextStyle(fontSize: 11, color: Colors.grey)),
+            ),
           ],
         );
       case TripState.inRoute:

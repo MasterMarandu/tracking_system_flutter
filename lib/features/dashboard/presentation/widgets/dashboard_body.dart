@@ -177,20 +177,22 @@ class _NextStopCard extends StatelessWidget {
                   style: TextStyle(
                       fontSize: 14,
                       color: Colors.white.withValues(alpha: 0.8))),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Icon(Icons.business,
-                      size: 14,
-                      color: Colors.white.withValues(alpha: 0.7)),
-                  const SizedBox(width: 4),
-                  Text(tripData.customerName,
-                      style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white.withValues(alpha: 0.9))),
-                ],
-              ),
+              if (tripData.customerName.trim().isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(Icons.business,
+                        size: 14,
+                        color: Colors.white.withValues(alpha: 0.7)),
+                    const SizedBox(width: 4),
+                    Text(tripData.customerName,
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white.withValues(alpha: 0.9))),
+                  ],
+                ),
+              ],
               const SizedBox(height: 24),
               Row(
                 children: [
@@ -207,13 +209,13 @@ class _NextStopCard extends StatelessWidget {
                       value: tripData.etaMinutes != null
                           ? '${tripData.etaMinutes} min'
                           : '—',
-                      label: 'ETA',
+                      label: 'Tiempo est.',
                       color: Colors.white),
                   VDiv(color: Colors.white.withValues(alpha: 0.2)),
                   StopStat(
                       icon: Icons.access_time,
                       value: arrivalString,
-                      label: 'Llegada',
+                      label: 'Llegada est.',
                       color: Colors.white),
                   VDiv(color: Colors.white.withValues(alpha: 0.2)),
                   StopStat(
@@ -418,8 +420,9 @@ class _QuickActionsSection extends ConsumerWidget {
       case TripState.noTrip:
         return [ActionDef(Icons.info_outline, 'Info', Colors.blue, () {})];
       case TripState.preTrip:
+        // El checklist ya tiene su CTA principal (botón naranja). No duplicar
+        // aquí un tile "Checklist" que hace lo mismo (H5). Solo "Incidencia".
         return [
-          ActionDef(Icons.checklist, 'Checklist', Colors.purple, () {}),
           ActionDef(Icons.report_outlined, 'Incidencia', Colors.orange, () {}),
         ];
       case TripState.inRoute:
@@ -460,25 +463,41 @@ class _KPISection extends StatelessWidget {
           const Text('Resumen del día',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           const SizedBox(height: 16),
-          GridView.count(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisCount: 4,
-            crossAxisSpacing: 8,
-            mainAxisSpacing: 8,
-            childAspectRatio: 0.85,
-            children: [
+          LayoutBuilder(
+            builder: (context, constraints) {
+              // 2×2 en móvil estrecho (etiquetas legibles + soporta escalado de
+              // fuente); 4 columnas solo en anchos de tablet/landscape (H15).
+              final cols = constraints.maxWidth >= 480 ? 4 : 2;
+              return GridView.count(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                crossAxisCount: cols,
+                crossAxisSpacing: 8,
+                mainAxisSpacing: 8,
+                childAspectRatio: cols == 2 ? 2.0 : 1.0,
+                children: [
               KPICard(value: '${tripData.deliveredCount}',
                   label: 'Entregados', color: Colors.green),
               KPICard(value: '${tripData.pendingCount}',
                   label: 'Pendientes', color: Colors.orange),
               KPICard(value: '${tripData.incidentCount}',
-                  label: 'Incidencias', color: Colors.red),
+                  label: 'Incidencias', color: Colors.red,
+                  // 0 incidencias NO es alarma: solo se resalta en rojo si hay.
+                  emphasized: tripData.incidentCount > 0),
               KPICard(
-                  value: '${(tripData.efficiencyPercent * 100).toInt()}%',
-                  label: 'Eficiencia',
-                  color: theme.colorScheme.primary),
-            ],
+                  // Sin entregas registradas, un ratio sobre cero no es un KPI:
+                  // mostrar '—' hasta tener muestra (evita 0% desmotivador).
+                  value: tripData.deliveredCount > 0
+                      ? '${(tripData.efficiencyPercent * 100).toInt()}%'
+                      : '—',
+                  // "Avance de entregas" es más transparente que "Eficiencia":
+                  // mide entregas completadas frente a las planificadas.
+                  label: 'Avance',
+                  color: theme.colorScheme.primary,
+                  emphasized: tripData.deliveredCount > 0),
+                ],
+              );
+            },
           ),
         ],
       ),

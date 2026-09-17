@@ -219,13 +219,13 @@ class _MoreScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('More')),
+      appBar: AppBar(title: const Text('Más')),
       body: ListView(
         children: [
           _buildMenuItem(
             context,
             icon: Icons.notifications_outlined,
-            title: 'Notifications',
+            title: 'Notificaciones',
             onTap: () => context.push('/notifications'),
           ),
           _buildMenuItem(

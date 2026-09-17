@@ -130,7 +130,7 @@ class OperationStatusBar extends StatelessWidget {
                 active: status.synced,
               ),
               const SizedBox(width: 6),
-              Text('Sync',
+              Text('Sinc.',
                   style: TextStyle(
                       fontSize: 11,
                       color: status.synced ? Colors.green : Colors.red,

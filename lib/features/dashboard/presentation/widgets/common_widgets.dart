@@ -204,35 +204,50 @@ class KPICard extends StatelessWidget {
   final String label;
   final Color color;
 
+  /// Cuando false, el número usa color de texto neutro (no el color de acento).
+  /// Útil para que "0 incidencias" no se vea como alarma en rojo.
+  final bool emphasized;
+
   const KPICard({
     super.key,
     required this.value,
     required this.label,
     required this.color,
+    this.emphasized = true,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Sin énfasis: superficie neutra y número en color de texto principal.
+    final surface = emphasized ? color.withValues(alpha: 0.08)
+        : theme.colorScheme.onSurface.withValues(alpha: 0.04);
+    final border = emphasized ? color.withValues(alpha: 0.15)
+        : theme.colorScheme.onSurface.withValues(alpha: 0.10);
+    final valueColor = emphasized ? color : theme.colorScheme.onSurface;
     return Container(
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
+        color: surface,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.15)),
+        border: Border.all(color: border),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(
-            value,
-            style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.bold, color: color),
+          FittedBox(
+            child: Text(
+              value,
+              style: TextStyle(
+                  fontSize: 22, fontWeight: FontWeight.w700, color: valueColor),
+            ),
           ),
+          const SizedBox(height: 2),
           Text(
             label,
+            textAlign: TextAlign.center,
             style: TextStyle(
-                fontSize: 9, color: theme.colorScheme.onSurfaceVariant),
+                fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
           ),
         ],
       ),
