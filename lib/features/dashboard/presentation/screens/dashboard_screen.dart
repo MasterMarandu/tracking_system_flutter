@@ -26,6 +26,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   DeviceStatus _deviceStatus = const DeviceStatus();
   List<ChecklistItem> _checklistItems = _defaultChecklistItems();
   String? _lastAppliedTripId;
+  /// Guard contra doble toque en "Navegar": openNavigation hace varias
+  /// llamadas async (permisos GPS, contexto del viaje, arranque de tracking)
+  /// que pueden tardar; sin esto el usuario puede disparar la acción varias
+  /// veces y encolar operaciones duplicadas.
+  bool _isNavigating = false;
   /// Trip id que ya sincronizó providers (para reset de delivery al cambiar viaje).
   String? _lastSyncedTripId;
 
@@ -375,6 +380,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   Future<void> _onNavigate() async {
+    // Guard: ignora toques repetidos mientras la navegación se está preparando.
+    if (_isNavigating) return;
+
     final bootstrap = ref.read(bootstrapProvider).valueOrNull;
     final trip = bootstrap?.trip;
 
@@ -388,43 +396,99 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       return;
     }
 
-    final result = await NavigationService.instance.openNavigation(
-      tripId: trip.id,
-      activateTrip: false,
-    );
+    setState(() => _isNavigating = true);
+    // Overlay de progreso: bloquea la UI y comunica que se está procesando
+    // (evita la sensación de "no pasa nada" al tocar Navegar).
+    _showNavigatingOverlay();
 
-    if (!mounted) return;
-
-    if (!result.success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            result.error ?? 'No se pudo abrir la navegación.',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
+    try {
+      final result = await NavigationService.instance.openNavigation(
+        tripId: trip.id,
+        activateTrip: false,
       );
-      return;
+
+      if (!mounted) return;
+      _dismissNavigatingOverlay();
+
+      if (!result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              result.error ?? 'No se pudo abrir la navegación.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      if (trip.status == 'pausado' || trip.status == 'programado') {
+        await ref.read(syncEngineProvider.notifier).enqueueOperation(
+              SyncOperationType.updateTripStatus,
+              {
+                'tripId': trip.id,
+                'status': 'en_curso',
+              },
+            );
+      }
+
+      if (!mounted) return;
+
+      final tripState = ref.read(tripStateProvider);
+      if (tripState == TripState.paused || tripState == TripState.preTrip) {
+        ref.read(tripStateProvider.notifier).setState(TripState.inRoute);
+      }
+
+      if (mounted) context.go('/tracking');
+    } finally {
+      // El overlay pudo haberse cerrado ya arriba; _dismiss es idempotente.
+      if (mounted) {
+        _dismissNavigatingOverlay();
+        setState(() => _isNavigating = false);
+      } else {
+        _isNavigating = false;
+      }
     }
+  }
 
-    if (trip.status == 'pausado' || trip.status == 'programado') {
-      await ref.read(syncEngineProvider.notifier).enqueueOperation(
-            SyncOperationType.updateTripStatus,
-            {
-              'tripId': trip.id,
-              'status': 'en_curso',
-            },
-          );
-    }
+  bool _navigatingOverlayShown = false;
 
-    if (!mounted) return;
+  void _showNavigatingOverlay() {
+    if (_navigatingOverlayShown) return;
+    _navigatingOverlayShown = true;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(
+        canPop: false,
+        child: Center(
+          child: Card(
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  ),
+                  SizedBox(width: 16),
+                  Text('Preparando navegación…'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
-    final tripState = ref.read(tripStateProvider);
-    if (tripState == TripState.paused || tripState == TripState.preTrip) {
-      ref.read(tripStateProvider.notifier).setState(TripState.inRoute);
-    }
-
-    if (mounted) context.go('/tracking');
+  void _dismissNavigatingOverlay() {
+    if (!_navigatingOverlayShown) return;
+    _navigatingOverlayShown = false;
+    // Cierra solo el diálogo del overlay (root navigator).
+    Navigator.of(context, rootNavigator: true).pop();
   }
 
   Future<void> _confirmManualArrival() async {

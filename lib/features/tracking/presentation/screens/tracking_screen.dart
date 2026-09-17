@@ -8,7 +8,7 @@ import 'package:tracking_system_app/core/services/gps_service.dart';
 import 'package:tracking_system_app/core/services/location_service.dart';
 import 'package:tracking_system_app/features/dashboard/domain/driver_bootstrap.dart';
 import 'package:tracking_system_app/features/dashboard/providers/bootstrap_provider.dart';
-import 'package:tracking_system_app/features/tracking/domain/delivery_service.dart';
+import 'package:tracking_system_app/features/dashboard/providers/delivery_flow_provider.dart';
 
 // ==================== HELPERS ====================
 
@@ -1386,90 +1386,45 @@ class _ActionSection extends ConsumerWidget {
   }
 
   Future<void> _handleConfirmArrival(BuildContext context, WidgetRef ref) async {
-    final otpCode = await showDialog<String>(
-      context: context,
-      builder: (ctx) => _OtpDialog(),
-    );
+    // Guarda: sin checkpoint la parada no es operable.
+    if (currentStop?.checkpointId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            'Esta parada no está lista para operar (sin punto de control). '
+            'Pide reprogramar el viaje desde el backoffice.',
+          ),
+          backgroundColor: _T.danger,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+      return;
+    }
 
-    if (otpCode == null || otpCode.isEmpty) return;
+    // "Confirmar llegada" SOLO registra la llegada y avanza el paso del flujo
+    // (escanear → foto → firma → OTP → completar). Antes este botón saltaba
+    // directo a pedir OTP y completar la entrega; si el conductor cancelaba el
+    // OTP, no pasaba nada y la pantalla se quedaba en "0 de 1". El OTP y la
+    // entrega se disparan luego con el botón contextual "CONTINUAR: ...".
+    await ref.read(deliveryFlowProvider.notifier).confirmArrival(
+          tripId: trip.id,
+          stopId: currentStop!.id,
+          checkpointId: currentStop!.checkpointId,
+        );
 
     if (!context.mounted) return;
 
-    // Show loading
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      useRootNavigator: true,
-      builder: (_) => const Center(
-        child: Card(
-          child: Padding(
-            padding: EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 16),
-                Text('Verificando entrega...'),
-              ],
-            ),
-          ),
-        ),
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Llegada confirmada. Continúa con la entrega.'),
+        backgroundColor: _T.success,
+        behavior: SnackBarBehavior.floating,
       ),
     );
 
-    // Try to verify OTP first
-    final deliveryService = DeliveryService.instance;
-    DeliveryResult result;
-
-    if (currentStop!.checkpointId != null) {
-      result = await deliveryService.verifyOtp(
-        checkpointId: currentStop!.checkpointId!,
-        otpCode: otpCode,
-      );
-
-      // If OTP verification fails or not configured, try complete_delivery
-      if (!result.success && result.error?.contains('not configured') == true) {
-        result = await deliveryService.completeDelivery(
-          checkpointId: currentStop!.checkpointId!,
-          tripId: trip.id,
-          stopId: currentStop!.id,
-          outcome: 'complete',
-        );
-      }
-    } else {
-      result = const DeliveryResult(
-        success: false,
-        error: 'No checkpoint available',
-      );
-    }
-
-    if (!context.mounted) return;
-
-    // Dismiss loading — pop root navigator to remove dialog, not GoRouter route
-    Navigator.of(context, rootNavigator: true).pop();
-
-    // Show result
-    if (result.success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result.tripCompleted
-              ? '¡Viaje completado!'
-              : 'Entrega confirmada exitosamente'),
-          backgroundColor: _T.success,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      // Refresh bootstrap to update UI
-      ref.invalidate(bootstrapProvider);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result.error ?? 'Error al confirmar entrega'),
-          backgroundColor: _T.danger,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
+    // Refrescar bootstrap para que la UI refleje el nuevo estado de la parada.
+    ref.invalidate(bootstrapProvider);
   }
 }
 
