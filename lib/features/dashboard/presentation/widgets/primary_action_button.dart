@@ -92,38 +92,39 @@ class PrimaryActionButton extends StatelessWidget {
           ],
         );
       case TripState.inRoute:
+        // El CTA primario avanza el estado ("Llegué a la parada"); navegar es
+        // auxiliar. Verde de marca para el flujo feliz.
         return Column(
           children: [
             ElevatedButton.icon(
-              onPressed: onNavigate,
-              icon: const Icon(Icons.navigation),
-              label: const Text('NAVEGAR'),
-              style: _buttonStyle(theme.colorScheme.primary),
+              onPressed: totalStops > 0 ? onArriveManually : onNavigate,
+              icon: const Icon(Icons.location_on),
+              label: Text(totalStops > 0 ? 'LLEGUÉ A LA PARADA' : 'NAVEGAR'),
+              style: _buttonStyle(const Color(0xFF206B5C)),
             ),
             if (totalStops > 0) ...[
               const SizedBox(height: 8),
               TextButton.icon(
-                onPressed: onArriveManually,
-                icon: const Icon(Icons.location_on_outlined),
-                label: const Text('Confirmar llegada manualmente'),
+                onPressed: onNavigate,
+                icon: const Icon(Icons.navigation_outlined),
+                label: const Text('Navegar'),
               ),
             ],
           ],
         );
       case TripState.geofenceEntry:
+        // Verde de marca: el naranja se reserva para alerta/incidencia/bloqueo.
         return Column(
           children: [
             ElevatedButton(
               onPressed: onStartDelivery,
-              style: _buttonStyle(const Color(0xFFF59E42)),
+              style: _buttonStyle(const Color(0xFF206B5C)),
               child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.navigation, size: 20),
+                  Icon(Icons.assignment_turned_in, size: 20),
                   SizedBox(width: 10),
-                  Text('INICIAR ENTREGA'),
-                  SizedBox(width: 8),
-                  Icon(Icons.chevron_right, size: 20),
+                  Text('CONFIRMAR ENTREGA'),
                 ],
               ),
             ),

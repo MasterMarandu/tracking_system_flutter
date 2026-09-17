@@ -139,7 +139,8 @@ class _DeliverySheetState extends ConsumerState<_DeliverySheet> {
   }
 
   Widget _buildDeliveryProgress(int currentStep, ThemeData theme) {
-    const steps = ['Llegada', 'Escaneo', 'Foto', 'Firma', 'OTP', 'Finalizar'];
+    // OTP omitido: no se genera código de verificación (ver advanceStep).
+    const steps = ['Llegada', 'Escaneo', 'Foto', 'Firma', 'Finalizar'];
     return Row(
       children: List.generate(steps.length, (i) {
         final isCompleted = i < currentStep;

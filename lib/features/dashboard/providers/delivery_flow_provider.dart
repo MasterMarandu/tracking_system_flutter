@@ -55,8 +55,9 @@ class DeliveryFlowState {
       otpAttempts: otpAttempts ?? this.otpAttempts,
       otpFormatValid: otpFormatValid ?? this.otpFormatValid,
       outcome: outcome ?? this.outcome,
-      incidentReason:
-          clearIncidentReason ? null : (incidentReason ?? this.incidentReason),
+      incidentReason: clearIncidentReason
+          ? null
+          : (incidentReason ?? this.incidentReason),
     );
   }
 }
@@ -67,9 +68,15 @@ class DeliveryFlowController extends Notifier<DeliveryFlowState> {
 
   void advanceStep() {
     final steps = DeliveryStep.values;
-    final currentIndex = steps.indexOf(state.currentStep);
-    if (currentIndex >= steps.length - 1) return;
-    state = state.copyWith(currentStep: steps[currentIndex + 1]);
+    var next = steps.indexOf(state.currentStep) + 1;
+    // El paso OTP está desactivado: hoy nadie genera ni entrega el código al
+    // destinatario (verify_delivery_otp compararía contra un otp_code que nunca
+    // se setea). Se omite para no pedir un código que el cliente no tiene.
+    while (next < steps.length && steps[next] == DeliveryStep.enterOTP) {
+      next++;
+    }
+    if (next >= steps.length) return;
+    state = state.copyWith(currentStep: steps[next]);
   }
 
   /// Confirma la llegada a la parada: registra hora_llegada (checkpoint 'llego')
@@ -81,15 +88,14 @@ class DeliveryFlowController extends Notifier<DeliveryFlowState> {
     required String? checkpointId,
   }) async {
     if (checkpointId != null) {
-      await ref.read(syncEngineProvider.notifier).enqueueOperation(
-            SyncOperationType.markArrival,
-            {
-              'tripId': tripId,
-              if (stopId != null) 'stopId': stopId,
-              'checkpointId': checkpointId,
-              'arrivedAt': DateTime.now().toUtc().toIso8601String(),
-            },
-          );
+      await ref
+          .read(syncEngineProvider.notifier)
+          .enqueueOperation(SyncOperationType.markArrival, {
+            'tripId': tripId,
+            if (stopId != null) 'stopId': stopId,
+            'checkpointId': checkpointId,
+            'arrivedAt': DateTime.now().toUtc().toIso8601String(),
+          });
     }
     advanceStep();
   }
@@ -153,7 +159,8 @@ class DeliveryFlowController extends Notifier<DeliveryFlowState> {
     state = state.copyWith(
       outcome: outcome,
       incidentReason: reason,
-      clearIncidentReason: reason == null && outcome == DeliveryOutcome.complete,
+      clearIncidentReason:
+          reason == null && outcome == DeliveryOutcome.complete,
     );
   }
 
@@ -173,24 +180,24 @@ class DeliveryFlowController extends Notifier<DeliveryFlowState> {
     final ids = packageIds ?? state.scannedPackageIds.toList();
 
     await ref.read(syncEngineProvider.notifier).enqueueOperation(
-          SyncOperationType.completeDelivery,
-          {
-            'tripId': tripId,
-            if (stopId != null) 'stopId': stopId,
-            if (checkpointId != null) 'checkpointId': checkpointId,
-            'outcome': outcome,
-            'packagesDelivered':
-                packagesDelivered > 0 ? packagesDelivered : ids.length,
-            if (state.incidentReason != null)
-              'incidentReason': state.incidentReason,
-            'scannedPackages': ids,
-            'photoTaken': state.photoTaken,
-            'signatureCaptured':
-                state.signatureStrokes.expand((s) => s).isNotEmpty,
-            'otpVerified': state.otpVerified,
-            'completedAt': DateTime.now().toUtc().toIso8601String(),
-          },
-        );
+      SyncOperationType.completeDelivery,
+      {
+        'tripId': tripId,
+        if (stopId != null) 'stopId': stopId,
+        if (checkpointId != null) 'checkpointId': checkpointId,
+        'outcome': outcome,
+        'packagesDelivered': packagesDelivered > 0
+            ? packagesDelivered
+            : ids.length,
+        if (state.incidentReason != null)
+          'incidentReason': state.incidentReason,
+        'scannedPackages': ids,
+        'photoTaken': state.photoTaken,
+        'signatureCaptured': state.signatureStrokes.expand((s) => s).isNotEmpty,
+        'otpVerified': state.otpVerified,
+        'completedAt': DateTime.now().toUtc().toIso8601String(),
+      },
+    );
 
     reset();
   }
@@ -209,7 +216,9 @@ class DeliveryFlowController extends Notifier<DeliveryFlowState> {
       photoTaken: session.photoCompleted,
       otpVerified: session.otpVerified,
       signatureStrokes: session.signatureCompleted
-          ? [[const Offset(0, 0), const Offset(10, 10)]]
+          ? [
+              [const Offset(0, 0), const Offset(10, 10)],
+            ]
           : [],
     );
   }
@@ -217,5 +226,5 @@ class DeliveryFlowController extends Notifier<DeliveryFlowState> {
 
 final deliveryFlowProvider =
     NotifierProvider<DeliveryFlowController, DeliveryFlowState>(
-  DeliveryFlowController.new,
-);
+      DeliveryFlowController.new,
+    );
